@@ -127,7 +127,7 @@ IO.inspect "Blah1 #{inspect fun}"
   end
   defp do_check_fun_follows_spec(mn, [{fun_type, _, _} = fun | exprs], nil, funspec) when fun_type in @fun_types do
 IO.inspect "Blah2 #{inspect fun}"
-    case does_spec_match_fun(funspec, fun) do
+    case does_spec_match_fun_name(funspec, fun) do
       nil -> do_check_fun_follows_spec(mn, exprs, nil, funspec)
       err ->
         [msg(mn, fun, "Fun does not match the prior listed spec with error of \"#{err}\"", funspec) |
@@ -169,9 +169,9 @@ IO.inspect "Blah9"
   @opaque spec_ast :: nil
   @opaque fun_ast :: nil
 
-  @spec does_spec_match_fun(spec_ast, fun_ast) :: boolean() | nil
-  defp does_spec_match_fun(spec, fun)
-  defp does_spec_match_fun(
+  @spec does_spec_match_fun_name(spec_ast, fun_ast) :: boolean() | nil
+  defp does_spec_match_fun_name(spec, fun)
+  defp does_spec_match_fun_name(
     {:@, _, [{:spec, spec_attrs, [{:::, _spec_attrs, [spec_head | spec_body]}]}]},
     {fun_type, fun_attrs, [fun_head | fun_body]})
   when fun_type in @fun_types do
@@ -185,7 +185,7 @@ IO.puts "blorp\n#{inspect spec_name}\n#{inspect fun_name}"
       nil
     end
   end
-  defp does_spec_match_fun(non_spec, non_fun) do
+  defp does_spec_match_fun_name(non_spec, non_fun) do
     "ERROR:  Not spec or fun:\nNonSpec: #{inspect non_spec}\nNonFun: #{inspect non_fun}"
   end
 
