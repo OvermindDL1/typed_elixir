@@ -4,10 +4,6 @@ defmodule TypedElixirTest do
   use ExUnit.Case
   doctest TypedElixir
 
-  test "the truth" do
-    assert 1 + 1 == 2
-  end
-
 
   test "Typed Module" do
     use TypedElixir
@@ -17,6 +13,9 @@ defmodule TypedElixirTest do
       import String
 
       @type test_type :: String.t
+
+      @spec fun_default() :: nil
+      @spec fun_default(any()) :: nil
 
       @spec simple() :: nil
       def simple(), do: nil
@@ -31,7 +30,9 @@ defmodule TypedElixirTest do
         "unknown hello: #{inspect obj}"
       end
 
-      def fun_no_spec(), do: nil
+      def fun_default(_t \\ 42), do: nil
+
+      def fun_no_spec(_t \\ 42), do: nil
     end
 
     assert "Hello world" == TypedTest.hello("Hello")
