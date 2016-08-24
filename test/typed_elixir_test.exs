@@ -21,11 +21,14 @@ defmodule TypedElixirTest do
       @spec simple() :: nil
       def simple(), do: nil
 
-      @spec hello(String.t) :: String.t | Map.t
+      @spec hello(test_type) :: test_type | Map.t
       def hello(str) when is_binary(str) do
         # @spec ret :: String.t # TODO
         ret = trim(str) <> " world"
         ret
+      end
+      def hello(obj) do
+        "unknown hello: #{inspect obj}"
       end
 
       def fun_no_spec(), do: nil
