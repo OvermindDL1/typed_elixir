@@ -22,6 +22,8 @@ defmodule TypedElixir do
   defmacro defmodulet(alias_name, do: block_module) do
     quote do
       defmodule unquote(alias_name) do
+        @after_compile TypedElixir
+
         unquote(clear_unneeded_specs(block_module))
 
         TypedElixir.type_check(
@@ -86,6 +88,8 @@ defmodule TypedElixir do
     # check_fun_follows_spec_ = check_fun_follows_spec(module_name, body, env)
     # IO.puts "\ncheck_fun_follows_spec:"
     # IO.inspect check_fun_follows_spec_
+
+    {type_fun_warnings, type_fun_errors} = check_types(module_name, body, env)
 
     IO.puts "\n\n\n====== Actual Output ======\n"
 
@@ -182,6 +186,62 @@ defmodule TypedElixir do
   def get_when_ast_from_head({:when, _, [_|when_ast]}), do: when_ast
   def get_when_ast_from_head(_), do: []
 
+
+  def check_types(module_name, body, env)
+  def check_types(module_name, body, env) do
+    IO.inspect {:check_types, module_name, body, env}
+    # IO.inspect Keyword.keys(env.functions)
+    # env.functions |> Enum.map(&IO.inspect/1)
+    {[], []}
+  end
+
+
+  # Get type of:
+
+  # Should cache this... badly...
+  defp get_type_of() do
+  end
+
+  def __after_compile__(env, objbin) do
+    {:ok, {_modname, [abstract_code: abscode]}} = :beam_lib.chunks(objbin, [:abstract_code])
+    {:raw_abstract_v1, code} = abscode
+    code
+    |> Enum.reduce(%{opaques: [], types: [], specs: []}, fn
+      {:attribute, _line, :spec, {raw_fun, [raw_first_clause | _rest]} = newspec}, %{specs: spec} = acc ->
+        # IO.inspect {"Found spec", raw_fun, raw_first_clause, _rest}
+        %{acc | specs: [newspec|spec]}
+      {:attribute, _line, :type, {name, type_form, var_form} = newtype}, %{types: type} = acc ->
+        # IO.inspect {"Found type", name, type_form, var_form}
+        %{acc | types: [newtype|type]}
+      {:attribute, _line, :opaque, {name, type_form, var_form} = newopaque}, %{opaques: opaque} = acc ->
+        # IO.inspect {"Found opaque", name, type_form, var_form}
+        %{acc | opaques: [newopaque|opaque]}
+      _bc, acc ->
+        # IO.inspect {:blah, _bc}
+        acc
+    end)
+    |> IO.inspect
+  end
+
+  @spec get_module_types_funspecs(atom()) :: %{}
+  def get_module_types_funspecs(module) do
+    {^module, objbin, _filename} = :code.get_object_code(module)
+    {:ok, {^module, [abstract_code: abscode, exports: exports]}} = :beam_lib.chunks(objbin, [:abstract_code, :exports])
+    {:raw_abstract_v1, code} = abscode
+    code
+    |> Enum.reduce(%{opaques: [], types: [], specs: []}, fn
+      {:attribute, _line, :spec, {raw_fun, [raw_first_clause | _rest]} = newspec}, %{specs: spec} = acc ->
+        # IO.inspect {"Found spec", raw_fun, raw_first_clause, _rest}
+        %{acc | specs: [newspec|spec]}
+      {:attribute, _line, :type, {name, type_form, var_form} = newtype}, %{types: type} = acc ->
+        # IO.inspect {"Found type", name, type_form, var_form}
+        %{acc | types: [newtype|type]}
+      {:attribute, _line, :opaque, {name, type_form, var_form} = newopaque}, %{opaques: opaque} = acc ->
+        # IO.inspect {"Found opaque", name, type_form, var_form}
+        %{acc | opaques: [newopaque|opaque]}
+      _, acc -> acc
+    end)
+  end
 
 
 # def check_fun_follows_spec(module_name, {:__block__, _attrs, expressions}, _env) do
