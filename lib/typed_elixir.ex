@@ -22,7 +22,7 @@ defmodule TypedElixir do
   defmacro defmodulet(alias_name, do: block_module) do
     quote do
       defmodule unquote(alias_name) do
-        unquote(block_module)
+        unquote(clear_unneeded_specs(block_module))
 
         TypedElixir.type_check(
           unquote(alias_name),
@@ -33,6 +33,32 @@ defmodule TypedElixir do
     end
   end
 
+  # defmodulet helpers
+
+  defp clear_unneeded_specs(block_module)
+  defp clear_unneeded_specs({:__block__, blockattrs, blockbody}) do
+    {:__block__, blockattrs, clear_unneeded_specs_module(blockbody)}
+  end
+
+  defp clear_unneeded_specs_module(blockbody)
+  defp clear_unneeded_specs_module([]), do: []
+  defp clear_unneeded_specs_module([{funtype, funattrs, funbody}|blockbody]) when funtype in @fun_types do
+    [{funtype, funattrs, clean_unneeded_specs_fun(funbody)} | clear_unneeded_specs_module(blockbody)]
+  end
+  defp clear_unneeded_specs_module([block|blockbody]) do
+    [block | clear_unneeded_specs_module(blockbody)]
+  end
+
+  defp clean_unneeded_specs_fun(block_fun)
+  defp clean_unneeded_specs_fun(block_fun) do
+    Macro.prewalk(block_fun, fn
+      {:@, _, [{:spec, _, _}]} -> nil
+      {:@, _, [{:spec, _, _}]} -> nil
+      ast -> ast
+    end)
+  end
+
+  # Type checking
 
   def type_check(module_name, module_body, module_env)
   def type_check(module_name, body, env) do
@@ -155,6 +181,7 @@ defmodule TypedElixir do
 
   def get_when_ast_from_head({:when, _, [_|when_ast]}), do: when_ast
   def get_when_ast_from_head(_), do: []
+
 
 
 # def check_fun_follows_spec(module_name, {:__block__, _attrs, expressions}, _env) do

@@ -22,7 +22,7 @@ defmodule TypedElixirTest do
 
       @spec hello(test_type) :: test_type | Map.t
       def hello(str) when is_binary(str) do
-        # @spec ret :: String.t # TODO
+        @spec ret :: String.t
         ret = trim(str) <> " world"
         ret
       end
@@ -36,7 +36,6 @@ defmodule TypedElixirTest do
     end
 
     assert "Hello world" == TypedTest.hello("Hello")
-    # String.blah
   end
 
 
