@@ -6,6 +6,7 @@ defmodule MLElixir do
   # import MLElixir, only: [defml: 1]; defml 42
   # import MLElixir, only: [defml: 1]; defml let a = 42 in a
   # import MLElixir, only: [defml: 1]; defml 1+2
+  # import MLElixir, only: [defml: 1]; defml let a = 1 in a+2
   # import MLElixir, only: [defml: 1]; defml module TestML: [id = fn(x)->x end]
   # import MLElixir, only: [defml: 1]; defml let id x = x in module TestML: [x = x, y]
 
@@ -166,7 +167,7 @@ defmodule MLElixir do
         case env.type_vars[ptr] do
           nil -> raise %UnificationError{type0: bindType}
           t ->
-            tightestType = unify_tightest_type(env, t, exprType)
+            tightestType = unify_types!(env, t, exprType)
             %{env |
               type_vars: Map.put(env.type_vars, ptr, tightestType)
             }
@@ -392,6 +393,7 @@ defmodule MLElixir do
       nil -> raise %UnknownCall{env: env, name: name, args: args}
       heads when is_list(heads) ->
         args_type = Enum.map(args, &type_of_expr(env, &1))
+        IO.inspect {:FUNCY, env}
         case Enum.find(heads, &type_call_does_match?(args_type, &1)) do
           nil -> raise %UnknownCall{env: env, name: name, args: args}
           {_argTypes, matchFn} -> matchFn.(args)
@@ -407,28 +409,36 @@ defmodule MLElixir do
   end
 
 
-  defp unify_tightest_type(env, t0, t1)
-  defp unify_tightest_type(env, t, t), do: {env, t}
-  defp unify_tightest_type(env, {@type_ptr, ptr, _ptrMeta}=t0, t1) do
-    case env.type_vars[ptr] do
+
+  defp unify_types!(env, t0, t1) do
+    case unify_types(env, t0, t1) do
       nil -> raise %UnificationError{type0: t0, type1: t1}
-      t -> unify_tightest_type(env, t, t1)
+      type -> type
     end
   end
-  defp unify_tightest_type(env, t0, {@type_ptr, ptr, _ptrMeta}=t1) do
+
+  defp unify_types(env, t0, t1)
+  defp unify_types(env, t, t), do: {env, t}
+  defp unify_types(env, {@type_ptr, ptr, _ptrMeta}=t0, t1) do
     case env.type_vars[ptr] do
-      nil -> raise %UnificationError{type0: t0, type1: t1}
-      t -> unify_tightest_type(env, t0, t)
+      nil -> nil
+      t -> unify_types(env, t, t1)
     end
   end
-  defp unify_tightest_type(env, {@type_generic, nil, _genMeta0}, t1), do: t1
-  defp unify_tightest_type(env, t0, {@type_generic, nil, _genMeta1}), do: t0
-  defp unify_tightest_type(env, {tt, v, _m0}=t0, {tt, v, _m1}=_t1) do
+  defp unify_types(env, t0, {@type_ptr, ptr, _ptrMeta}=t1) do
+    case env.type_vars[ptr] do
+      nil -> nil
+      t -> unify_types(env, t0, t)
+    end
+  end
+  defp unify_types(env, {@type_generic, nil, _genMeta0}, t1), do: t1
+  defp unify_types(env, t0, {@type_generic, nil, _genMeta1}), do: t0
+  defp unify_types(env, {tt, v, _m0}=t0, {tt, v, _m1}=_t1) do
     # TODO:  Add in meta parsing
     t0
   end
-  defp unify_tightest_type(env, t0, t1) do
-    raise %UnificationError{type0: t0, type1: t1}
+  defp unify_types(env, t0, t1) do
+    nil
   end
 
 
