@@ -1,0 +1,6 @@
+quote do @spec div(int, (d int if d != 0)) :: int end
+# quote do @spec testing(x: int if x >= 2) :: (r: int if r >= (x-2)) end
+quote do @spec testing(x: int if x >= 2) :: (if int >= x-2) end
+quote do @spec testing(x: int if x >= 2) :: if int >= x-2 end
+quote do @spec testing(x int when x >= 2) :: x int when x >= x-2 end
+quote do @spec div(number, (d is number if d != 0)) :: number end
