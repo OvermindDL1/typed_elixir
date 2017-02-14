@@ -43,10 +43,11 @@ defmodule MLElixir do
     end
   end
 
+  # TODO:  Use the message arg around
   defmodule UnificationError do
-    defexception env: %MLEnv{}, type0: nil, type1: nil
+    defexception message: "<unknown>", env: %MLEnv{}, type0: nil, type1: nil
     def message(e) do
-      "Unification error between `#{inspect e.type0}` and `#{inspect e.type1}`"
+      "Unification error between `#{inspect e.type0}` and `#{inspect e.type1}` with message:  #{e.message}"
     end
   end
 
@@ -54,24 +55,30 @@ defmodule MLElixir do
 
 
   # Types
-  @type_const_ :"$$TCONST$$" # {@type_const, atom,                  meta}
-  @type_app   :"$$TAPP$$"   # {@type_app,   type,          [type], meta}
-  @type_func  :"$$TFUNC$$"  # {@type_func,  [type],         type,  meta}
-  @type_var   :"$$TVAR$$"   # {@type_var,   env.type_vars,         meta}
-
-  # env.type_vars
-  @type_var_unbound :"$$TVARUNBOUND$$" # {@type_var_unbound, string, int, meta}
-  @type_var_link    :"$$TVARLINK$$"    # {@type_var_link,    type,        meta}
-  @type_var_generic :"$$TVARGENERIC$$" # {@type_var_generic, string,      meta}
+  # @type_const_ :"$$TCONST$$" # {@type_const, atom,                  meta}
+  # @type_app   :"$$TAPP$$"   # {@type_app,   type,          [type], meta}
+  # @type_func  :"$$TFUNC$$"  # {@type_func,  [type],         type,  meta}
+  # @type_var   :"$$TVAR$$"   # {@type_var,   env.type_vars,         meta}
+  #
+  # # env.type_vars
+  # @type_var_unbound :"$$TVARUNBOUND$$" # {@type_var_unbound, string, int, meta}
+  # @type_var_link    :"$$TVARLINK$$"    # {@type_var_link,    type,        meta}
+  # @type_var_generic :"$$TVARGENERIC$$" # {@type_var_generic, string,      meta}
 
   @tag_lit      :"$$LIT$$"
   @tag_var      :"$$VAR$$"
   @tag_let      :"$$LET$$"
+  @tag_mbind    :"$$MULTIBIND$$"
   @tag_call     :"$$CALL$$"
+  # @tag_func     :"$$FUNC$$"
 
-  @type_const   :"$$TCONST$$"
-  @type_generic :"$$TGENERIC$$"
-  @type_ptr     :"$$TPTR$$"
+  @type_const   :"$$TCONST$$"   # {@type_const, type, meta}
+  @type_ptr     :"$$TPTR$$"     # {@type_ptr, ptr, meta}
+  # @type_or      :"$$TPTR$$"     # {@type_or, [types], meta}
+  # @type_func    :"$$TFUNC$$"    # {@type_func, {[argTypes], retType}, meta}
+
+  # @type_ptr_generic :"$$TGENERIC$$" # {@type_ptr_generic, nil, meta}
+  @type_ptr_unbound :"$$TUNBOUND$$" # {@type_ptr_unbound, nil, meta}
 
 
   defmacro defml(expr) do
@@ -84,9 +91,9 @@ defmodule MLElixir do
           ],
         },
     }
-    IO.inspect {:DEFML1, expr}
+    # IO.inspect {:DEFML1, expr}
     {ml_env, ml_ast} = parse_ml_expr(base_ml_env, expr)
-    IO.inspect {:MLAST, ml_ast}
+    # IO.inspect {:MLAST, ml_ast}
     # {inferred_env, inferred_ast} = infer_ml_ast(ml_env, ml_ast)
     # IO.inspect {:MLINFERREDAST, inferred_ast}
     reify_ml_expr(ml_env, ml_ast)
@@ -96,27 +103,30 @@ defmodule MLElixir do
   defp parse_ml_expr(env, expr)
 
   # Literals... why does Elixir not give line information for these?!?
-  defp parse_ml_expr(env, int)   when is_integer(int), do: {env, {@tag_lit, [type: {@type_const, :int,   [value: int]}],   int}}
-  defp parse_ml_expr(env, float) when is_float(float), do: {env, {@tag_lit, [type: {@type_const, :float, [value: float]}], float}}
-  defp parse_ml_expr(env, atom)  when is_atom(atom),   do: {env, {@tag_lit, [type: {@type_const, :atom,  [value: atom]}],   atom}}
+  defp parse_ml_expr(env, int)   when is_integer(int), do: {env, {@tag_lit, [type: {@type_const, :int,   [values: [int]]}],   int}}
+  defp parse_ml_expr(env, float) when is_float(float), do: {env, {@tag_lit, [type: {@type_const, :float, [values: [float]]}], float}}
+  defp parse_ml_expr(env, atom)  when is_atom(atom),   do: {env, {@tag_lit, [type: {@type_const, :atom,  [values: [atom]]}],   atom}}
 
-  defp parse_ml_expr(env, {:module, module_meta, [[{module_name, module_defs}]]}) when is_atom(module_name) do
-    defs = Enum.map(module_defs, &parse_module_def(&1, env))
-    IO.inspect {:MODULE, module_name, defs}
-    :todo
-  end
+  # defp parse_ml_expr(env, {:module, module_meta, [[{module_name, module_defs}]]}) when is_atom(module_name) do
+  #   defs = Enum.map(module_defs, &parse_module_def(&1, env))
+  #   IO.inspect {:MODULE, module_name, defs}
+  #   :todo
+  # end
 
   # TODO:  Add `rec`/`and` handling here
 
   # Let variable binding to expression with following
-  defp parse_ml_expr(env, {:let, let_meta, [{:=, equal_meta, [binding_ast, {:in, in_meta, [inner_expr_ast, after_expr_ast]}]}]}) do
-    {envBinding, binding} = parse_binding(env, binding_ast)
-    {envExprInner, exprInner} = parse_ml_expr(envBinding, inner_expr_ast)
-    envInnerResolved = resolve_binding(envExprInner, binding, exprInner)
-    {envExprAfter, exprAfter} = parse_ml_expr(envInnerResolved, after_expr_ast)
-    ast = {@tag_let, [type: type_of_expr(envExprAfter, exprAfter)] ++ let_meta, [binding, exprInner, exprAfter]}
-    {envExprAfter, ast}
+  defp parse_ml_expr(env, {:let, let_meta, let_ast}) do
+    parse_let(env, let_meta, let_ast)
   end
+  # defp parse_ml_expr(env, {:let, let_meta, [{:=, equal_meta, [binding_ast, {:in, in_meta, [inner_expr_ast, after_expr_ast]}]}]}) do
+  #   {envBinding, binding} = parse_binding(env, binding_ast)
+  #   {envExprInner, exprInner} = parse_ml_expr(envBinding, inner_expr_ast)
+  #   {envInnerResolved, bindingResolved} = resolve_binding(envExprInner, binding, exprInner)
+  #   {envExprAfter, exprAfter} = parse_ml_expr(envInnerResolved, after_expr_ast)
+  #   ast = {@tag_let, [type: type_of_expr(envExprAfter, exprAfter)] ++ let_meta, [bindingResolved, exprInner, exprAfter]}
+  #   {envExprAfter, ast}
+  # end
 
   # # Let variable binding to expression without following
   # defp parse_ml_expr(env, {:let, let_meta, [{:=, equal_meta, [binding_ast, expr_ast]}]}) do
@@ -139,41 +149,130 @@ defmodule MLElixir do
   end
 
 
-  defp parse_module_def({:=, equal_meta, [name_ast, expr]}, env) do
-    :blah
+  # defp parse_module_def({:=, equal_meta, [name_ast, expr]}, env) do
+  #   :blah
+  # end
+
+
+
+  defp parse_let(env, let_meta, ast)
+  # Typeless binding
+  defp parse_let(env, let_meta, [{:=, _equal_meta, [binding_ast, {:in, _in_meta, [inner_expr_ast, after_expr_ast]}]}]) do
+    {envBinding, binding} = parse_binding(env, binding_ast)
+    {envExprInner, exprInner} = parse_ml_expr(envBinding, inner_expr_ast)
+    {envInnerResolved, bindingResolved} = resolve_binding(envExprInner, binding, exprInner)
+    {envExprAfter, exprAfter} = parse_ml_expr(envInnerResolved, after_expr_ast)
+    ast = {@tag_let, [type: type_of_expr(envExprAfter, exprAfter)] ++ let_meta, [bindingResolved, exprInner, exprAfter]}
+    {envExprAfter, ast}
+  end
+  # Typeless binding with name
+  defp parse_let(env, let_meta, [[{name_ast, {:=, equal_meta, [binding_ast, {:in, _in_meta, [inner_expr_ast, after_expr_ast]}]}}]]) when is_atom(name_ast) do
+    {envBinding, {_, bindMeta, _}=binding} = parse_binding(env, binding_ast)
+    {envBinding, nameType} = env_storeBinding(envBinding, name_ast, bindMeta[:type])
+    name = {@tag_var, [type: nameType] ++ let_meta, [name_ast, nil]}
+    args = {@tag_mbind, [type: nameType] ++ equal_meta, [name, binding]}
+    {envExprInner, exprInner} = parse_ml_expr(envBinding, inner_expr_ast)
+    {envInnerResolved, bindingResolved} = resolve_binding(envExprInner, args, exprInner)
+    {envExprAfter, exprAfter} = parse_ml_expr(envInnerResolved, after_expr_ast)
+    ast = {@tag_let, [type: type_of_expr(envExprAfter, exprAfter)] ++ let_meta, [bindingResolved, exprInner, exprAfter]}
+    {envExprAfter, ast}
+  end
+  # Typed
+
+
+  defp env_storeBinding(env, name, ptr_type \\ {@type_ptr_unbound, nil, []}) do
+    env = increment_counter(env)
+    type = {@type_ptr, env.counter, []}
+    # Hmm, cancel this, still bind them even if unused, good for lookups later to ensure typing
+    # if String.starts_with?(to_string(name), "_") do
+    #   {env, type}
+    # else
+      {
+        %{env |
+          type_bindings: Map.put(env.type_bindings, name, type),
+          type_vars: Map.put(env.type_vars, env.counter, ptr_type)
+          },
+        type
+      }
+    # end
   end
 
 
-  # Typeless variable binding
-  defp parse_binding(env, {name, meta, scope}) when is_atom(name) and not is_list(scope) do
-    env = increment_counter(env)
-    ptr_type = {@type_generic, nil, []}
-    type = {@type_ptr, env.counter, []}
-    newEnv = %{env |
-      type_bindings: Map.put(env.type_bindings, name, type),
-      type_vars: Map.put(env.type_vars, env.counter, ptr_type)
-      }
+  # STATIC BINDING: Typeless variable binding
+  # TODO:  Make version of this where scope defines the function
+  defp parse_binding(env, {name, meta, scope}) when is_atom(name) and is_atom(scope) do
+    {newEnv, type} = env_storeBinding(env, name)
     ast = {@tag_var, [type: type] ++ meta, [name, scope]}
+    {newEnv, ast}
+  end
+  # MATCHING BINDING:  Constants - Copied from parse_ml_expr...
+  defp parse_binding(env, int)   when is_integer(int), do: {env, {@tag_lit, [type: {@type_const, :int,   [values: [int]]}],   int}}
+  defp parse_binding(env, float) when is_float(float), do: {env, {@tag_lit, [type: {@type_const, :float, [values: [float]]}], float}}
+  defp parse_binding(env, atom)  when is_atom(atom),   do: {env, {@tag_lit, [type: {@type_const, :atom,  [values: [atom]]}],   atom}}
+  # STATIC TYPED BINDING:  Typed variable binding
+  defp parse_binding(env, {:!, meta, [[{name, type_expr}]]}) when is_atom(name) do
+    {env, varType} = parse_type(env, name, type_expr)
+    {newEnv, type} = env_storeBinding(env, name, varType)
+    ast = {@tag_var, [type: type] ++ meta, [name, nil]} # TODO:  Really need to constrain the scopes well...  `nil` is wide open
     {newEnv, ast}
   end
 
 
+  defp parse_type(env, varname, type_ast)
+  # Parse a constant int/float/atom type
+  defp parse_type(env, varname, {name, _meta, constraints}) when name in [:int, :float, :atom] do
+    {env, values} = parse_type_const_constraints(env, varname, name, constraints)
+    {env, {@type_const, name, values}}
+  end
+
+  defp parse_type_const_constraints(env, varname, ptype, constraint)
+  defp parse_type_const_constraints(env, _varname, _ptype, scope) when is_atom(scope), do: {env, []}
+  defp parse_type_const_constraints(env, varname, :int, [{:=, _meta, [{varname,_,varnameScope}, val]}]) when is_atom(varnameScope) and is_integer(val), do: {env, [values: [val]]}
+  defp parse_type_const_constraints(env, varname, :int, [{:>=, _meta, [{varname,_,varnameScope}, val]}]) when is_atom(varnameScope) and is_integer(val), do: {env, [values: [{val, :infinite}]]}
+  defp parse_type_const_constraints(env, varname, :int, [{:<=, _meta, [{varname,_,varnameScope}, val]}]) when is_atom(varnameScope) and is_integer(val), do: {env, [values: [{:infinite, val}]]}
+  defp parse_type_const_constraints(env, varname, :float, [{:=, _meta, [{varname,_,varnameScope}, val]}]) when is_atom(varnameScope) and is_float(val), do: {env, [values: [val]]}
+  defp parse_type_const_constraints(env, varname, :float, [{:>=, _meta, [{varname,_,varnameScope}, val]}]) when is_atom(varnameScope) and is_float(val), do: {env, [values: [{val, :infinite}]]}
+  defp parse_type_const_constraints(env, varname, :float, [{:<=, _meta, [{varname,_,varnameScope}, val]}]) when is_atom(varnameScope) and is_float(val), do: {env, [values: [{:infinite, val}]]}
+
+
+
+  # TODO:  Add support for matching bindings here
+
   # The binding is but a single variable, resolve it
-  defp resolve_binding(env, {@tag_var, bindMeta, [name, scope]}, {_, exprMeta, _}) do
+  defp resolve_binding(env, {@tag_var, bindMeta, [name, _scope]} = binding, {_, exprMeta, _}) do
     bindType = bindMeta[:type]
     exprType = exprMeta[:type]
     case bindType do
-      {@type_ptr, ptr, _typePtrMeta} ->
+      {@type_ptr, ptr, _typePtrMeta} -> # Bindings should always have a ptr type if not starting with "_"
         case env.type_vars[ptr] do
           nil -> raise %UnificationError{type0: bindType}
           t ->
-            tightestType = unify_types!(env, t, exprType)
-            %{env |
+            tightestType = resolve_types!(env, exprType, t)
+            resolvedEnv = %{env |
               type_vars: Map.put(env.type_vars, ptr, tightestType)
             }
+            {resolvedEnv, binding}
         end
       t -> raise %UnificationError{type0: t, type1: exprType}
     end
+  end
+
+  # Literal binding
+  defp resolve_binding(env, {@tag_lit, bindMeta, value}, {_, exprMeta, _}) do
+    bindType = bindMeta[:type]
+    exprType = exprMeta[:type]
+    resolvedType = resolve_types!(env, bindType, exprType)
+    binding = {@tag_lit, [type: resolvedType] ++ bindMeta, value}
+    {env, binding}
+  end
+
+  # Multi-bindings
+  defp resolve_binding(env, {@tag_mbind, bindMeta, values}, {_, _exprMeta, _}=expr) do
+    {env, newValues} = Enum.reduce(values, {env, []}, fn(value, {env, acc}) ->
+      {e, v} = resolve_binding(env, value, expr)
+      {e, acc ++ [v]}
+    end)
+    {env, {@tag_mbind, bindMeta, newValues}}
   end
 
 
@@ -369,7 +468,7 @@ defmodule MLElixir do
 
   # Typing
 
-  defp type_is_fullfilled_by({type, type_meta}, {constraint_type, constraint_meta}) do
+  defp type_is_fullfilled_by({type, _type_meta}, {constraint_type, _constraint_meta}) do
     # TODO:  Compare the meta's as necessary too perhaps?
     case {type, constraint_type} do
       {type, type} -> true
@@ -410,42 +509,152 @@ defmodule MLElixir do
 
 
 
+  defp resolve_types_const_meta_values(_env, _type, fromValues, intoValues)
+  defp resolve_types_const_meta_values(_env, _type, value, value), do: value
+  defp resolve_types_const_meta_values(_env, _type, fromValues, []), do: fromValues # `into` is accepting any value
+  defp resolve_types_const_meta_values(_env, _type, fromValues, intoValues) do
+    if Enum.all?(fromValues, fn
+      {:infinite, :infinite} -> Enum.all?(intoValues, fn
+        {:infinite, :infinite} -> true
+        :infinite -> true
+        _ -> false
+        end)
+      {fromFirst, :infinite} -> Enum.all?(intoValues, fn
+        {:infinite, :infinite} -> true
+        {intoFirst, :infinite} -> fromFirst>=intoFirst
+        :infinite -> true
+        _ -> false
+      end)
+      {:infinite, fromLast} -> Enum.all?(intoValues, fn
+        {:infinite, :infinite} -> true
+        {:infinite, intoLast} -> fromLast<=intoLast
+        :infinite -> true
+        _ -> false
+      end)
+      {fromFirst, fromLast} -> Enum.all?(intoValues, fn
+        {:infinite, :infinite} -> true
+        {intoFirst, :infinite} -> fromFirst>=intoFirst
+        {:infinite, intoLast} -> fromLast<=intoLast
+        {intoFirst, intoLast} -> fromFirst>=intoFirst and fromLast<=intoLast
+        :infinite -> true
+        into -> into === fromFirst and into === fromLast
+        end)
+      :infinite -> Enum.all?(intoValues, fn
+        {:infinite, :infinite} -> true
+        :infinite -> true
+        _ -> false
+        end)
+      from -> Enum.all?(intoValues, fn
+        {:infinite, :infinite} -> true
+        {intoFirst, :infinite} -> from>=intoFirst
+        {:infinite, intoLast} -> from<=intoLast
+        {intoFirst, intoLast} -> from>=intoFirst and from<=intoLast
+        :infinite -> true
+        into -> from === into
+        end)
+      end) do
+        fromValues
+      else
+        nil
+      end
+  end
+
+
+  defp resolve_types!(env, fromType, intoType) do
+    type = resolve_types(env, fromType, intoType)
+    if Exception.exception?(type) do
+      raise type
+    else
+      type
+    end
+  end
+  # `intoType` needs to be able to encompass `fromType`, such as if fromType
+  # has a specific value but intoType accepts a range of values that includes
+  # that values
+  defp resolve_types(env, fromType, intoType)
+  defp resolve_types(_env, type, type), do: type
+  defp resolve_types(env, {@type_const, type, fromMeta}=fromType, {@type_const, type, intoMeta}=intoType) do
+    case resolve_types_const_meta_values(env, type, List.wrap(fromMeta[:values]), List.wrap(intoMeta[:values])) do
+      nil ->
+        # TODO:  Make a dedicated %ResolutionError{} or something, or something specifically for these values perhaps?
+        %UnificationError{message: "Unable to resolve", env: env, type0: fromType, type1: intoType}
+      _values -> fromType
+    end
+  end
+  defp resolve_types(env, {@type_const, _fromType, _fromMeta}=fromType, {@type_const, _intoType, _intoMeta}=intoType) do
+    %UnificationError{message: "Unable to resolve mismatched types", env: env, type0: fromType, type1: intoType}
+  end
+  defp resolve_types(env, fromType, {@type_ptr, ptr, _intoMeta}=intoType) do
+    case env.type_vars[ptr] do
+      nil -> %UnificationError{message: "Unable to resolve pointed to var due to not being set", env: env, type0: fromType, type1: intoType}
+      t -> resolve_types(env, fromType, t)
+    end
+  end
+  defp resolve_types(env, fromType, {@type_ptr_unbound, nil, _intoMeta}), do: fromType
+
+
+
+  defp unify_types_const_meta_values(_env, type, values0, values1)
+  defp unify_types_const_meta_values(_env, _type, [], []), do: []
+  defp unify_types_const_meta_values(_env, _type, [], values1), do: values1
+  defp unify_types_const_meta_values(_env, _type, values0, []), do: values0
+  defp unify_types_const_meta_values(_env, _type, values0, values1) do
+    values0 ++ values1 # TODO:  Make this smarter, like by combining ranges, right now just combine them all
+  end
+
+  defp unify_types_const_meta(env, type, meta0, meta1) do
+    unified_values = unify_types_const_meta_values(env, type, List.wrap(meta0[:values]), List.wrap(meta1[:values]))
+    if Exception.exception?(unified_values) do
+      unified_values
+    else
+      [values: unified_values] ++ meta0 |> Enum.dedup() # TODO:  Simplify and merge
+    end
+  end
+
+
   defp unify_types!(env, t0, t1) do
-    case unify_types(env, t0, t1) do
-      nil -> raise %UnificationError{type0: t0, type1: t1}
-      type -> type
+    type = unify_types(env, t0, t1)
+    if Exception.exception?(type) do
+      raise type
+    else
+      type
     end
   end
 
   defp unify_types(env, t0, t1)
   defp unify_types(env, t, t), do: {env, t}
+  defp unify_types(env, {@type_const, type, meta0}, {@type_const, type, meta1}) do
+    unify_types_const_meta(env, type, meta0, meta1)
+  end
   defp unify_types(env, {@type_ptr, ptr, _ptrMeta}=t0, t1) do
     case env.type_vars[ptr] do
-      nil -> nil
+      nil -> %UnificationError{message: "Pointed to type0 is unbound", env: env, type0: t0, type1: t1}
       t -> unify_types(env, t, t1)
     end
   end
   defp unify_types(env, t0, {@type_ptr, ptr, _ptrMeta}=t1) do
     case env.type_vars[ptr] do
-      nil -> nil
+      nil -> %UnificationError{message: "Pointed to type1 is unbound", env: env, type0: t0, type1: t1}
       t -> unify_types(env, t0, t)
     end
   end
-  defp unify_types(env, {@type_generic, nil, _genMeta0}, t1), do: t1
-  defp unify_types(env, t0, {@type_generic, nil, _genMeta1}), do: t0
-  defp unify_types(env, {tt, v, _m0}=t0, {tt, v, _m1}=_t1) do
+  # defp unify_types(_env, {@type_ptr_generic, nil, _genMeta0}, t1), do: t1
+  # defp unify_types(_env, t0, {@type_ptr_generic, nil, _genMeta1}), do: t0
+  defp unify_types(_env, {@type_ptr_unbound, nil, _genMeta0}, t1), do: t1
+  defp unify_types(_env, t0, {@type_ptr_unbound, nil, _genMeta1}), do: t0
+  defp unify_types(_env, {tt, v, _m0}=t0, {tt, v, _m1}=_t1) do
     # TODO:  Add in meta parsing
     t0
   end
   defp unify_types(env, t0, t1) do
-    nil
+    %UnificationError{message: "Unable to unify types", env: env, type0: t0, type1: t1}
   end
 
 
   # Reification
 
   # Literal value
-  defp reify_ml_expr(env, {@tag_lit, _lit_meta, lit_value}), do: lit_value
+  defp reify_ml_expr(_env, {@tag_lit, _lit_meta, lit_value}), do: lit_value
 
   # Function call
   defp reify_ml_expr(env, {@tag_call, call_meta, [call_name | call_args]}) do
@@ -462,8 +671,16 @@ defmodule MLElixir do
   end
 
   # Variable binding
-  defp reify_ml_expr(env, {@tag_var, bind_meta, [name, scope]}) do
+  defp reify_ml_expr(_env, {@tag_var, bind_meta, [name, scope]}) do
     {name, bind_meta, scope}
+  end
+
+  # Multi-binding
+  defp reify_ml_expr(env, {@tag_mbind, bind_meta, bindings}) do
+    List.foldr(bindings, nil, fn
+      (binding, nil) -> reify_ml_expr(env, binding)
+      (binding, ast) -> {:=, bind_meta, [reify_ml_expr(env, binding), ast]}
+    end)
   end
 
 end
