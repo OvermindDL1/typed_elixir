@@ -8,6 +8,27 @@ defmodule MLElixirTest do
   import MLElixir
 
 
+  defmodule NativeTest do
+
+    def identity(x), do: x
+
+    def __ml_open__ do
+      %{
+        funs: %{
+          identity: fn
+            (env, meta, [{_,argMeta,_}]=args) ->
+              ast = {:"$$CALL$$", [type: argMeta[:type]] ++ meta, [{MLElixirTest.NativeTest, :identity} | args]}
+              {env, ast}
+            end,
+          },
+        types: %{
+        },
+      }
+    end
+
+  end
+
+
   test "literals" do
     assert 1 == defml 1
     assert 1.2 == defml 1.2
@@ -17,6 +38,7 @@ defmodule MLElixirTest do
   test "let - binding single untyped variable" do
     assert 1 == defml let _a = 2 in 1
     assert 1 == defml let a = 1 in a
+    assert 1 == defml let a = 1 in let b = a in b
   end
 
   test "let - named binding single untyped variable" do
@@ -30,6 +52,7 @@ defmodule MLElixirTest do
   test "let - binding single typed unconstrained variable" do
     assert 1 == defml let ![_a: int] = 2 in 1
     assert 1 == defml let ![a: int] = 1 in a
+    assert 1 == defml let a = 1 in let ![b: int] = a in b
     assert_compile_time_raise MLElixir.UnificationError, "Unable to resolve mismatched types", fn ->
       import MLElixir
       defml let ![a: int] = 6.28 in a
@@ -38,9 +61,14 @@ defmodule MLElixirTest do
 
   test "let - binding single typed constrained variable" do
     assert 1 == defml let ![a: int a=1] = 1 in a
+    assert 1 == defml let ![a: int a<=2] = 1 in a
     assert_compile_time_raise MLElixir.UnificationError, "Unable to resolve", fn ->
       import MLElixir
       defml let ![a: int a=2] = 1 in a
+    end
+    assert_compile_time_raise MLElixir.UnificationError, "Unable to resolve", fn ->
+      import MLElixir
+      defml let ![a: int a>=2] = 1 in a
     end
   end
 
@@ -60,6 +88,28 @@ defmodule MLElixirTest do
       defml let a = 1 in let 2 = a in a
     end
   end
+
+  test "let - open" do
+    assert 1 == defml let open MLElixir.Core in 1
+    assert 3 == defml let open MLElixir.Core in 1 + 2
+    assert_compile_time_raise MLElixir.InvalidCall, "No such function found", fn ->
+      import MLElixir
+      defml no_default_opens: true, do: 1 + 2
+    end
+    assert 3 == defml no_default_opens: true, do: let open MLElixir.Core in 1 + 2
+  end
+
+  test "fun - define" do
+    # Stupid trailing `end`s, elixir has such an annoying syntax at times...
+    defml fn blah -> blah end # So sorry for this `end`, just an elixir syntax stupidity, not even elixir should have an end with a fn without an explicit block, blah...
+    # assert 1 == defml(fun -> 1).()
+    # assert 1 == (defml fun x -> x).(1)
+    # assert 6.28 == (defml fun x -> x).(6.28)
+  end
+
+  # test "call" do
+  #   assert 1 == defml 1+2
+  # end
 
 
 end
