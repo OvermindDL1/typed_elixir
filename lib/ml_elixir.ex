@@ -73,18 +73,19 @@ defmodule MLElixir do
   # @type_var_link    :"$$TVARLINK$$"    # {@type_var_link,    type,        meta}
   # @type_var_generic :"$$TVARGENERIC$$" # {@type_var_generic, string,      meta}
 
-  @tag_lit      :"$$LIT$$"
-  @tag_var      :"$$VAR$$"
-  @tag_let      :"$$LET$$"
-  @tag_mbind    :"$$MULTIBIND$$"
-  @tag_call     :"$$CALL$$"
-  @tag_func     :"$$FUNC$$"
-  @tag_func_head     :"$$FUNCHEAD$$"
+  @tag_lit       :"$$LIT$$"
+  @tag_var       :"$$VAR$$"
+  @tag_let       :"$$LET$$"
+  @tag_mbind     :"$$MULTIBIND$$"
+  @tag_call      :"$$CALL$$"
+  @tag_func      :"$$FUNC$$"
+  @tag_func_head :"$$FUNCHEAD$$"
 
-  @type_const   :"$$TCONST$$"   # {@type_const, type, meta}
-  @type_ptr     :"$$TPTR$$"     # {@type_ptr, ptr, meta}
-  # @type_or      :"$$TPTR$$"     # {@type_or, [types], meta}
-  @type_func    :"$$TFUNC$$"    # {@type_func, {[argTypes], retType}, meta}
+  @type_const     :"$$TCONST$$"    # {@type_const, type, meta}
+  @type_ptr       :"$$TPTR$$"      # {@type_ptr, ptr, meta}
+  # @type_or        :"$$TPTR$$"      # {@type_or, [types], meta}
+  @type_func      :"$$TFUNC$$"     # {@type_func, [heads], meta}
+  @type_func_head :"$$TFUNCHEAD$$" # {@type_func_head, {args, return}, meta}
 
   # @type_ptr_generic :"$$TGENERIC$$" # {@type_ptr_generic, nil, meta}
   @type_ptr_unbound :"$$TUNBOUND$$" # {@type_ptr_unbound, nil, meta}
@@ -147,7 +148,9 @@ defmodule MLElixir do
     {ml_env, ml_ast} = parse_ml_expr(env, expr)
     # IO.inspect {:MLAST, ml_ast}
     # IO.inspect {:MLENV, ml_env}
-    reify_ml_expr(ml_env, ml_ast)
+    ast = reify_ml_expr(ml_env, ml_ast)
+    # IO.inspect {:MLDONE, ast}
+    ast
   end
 
 
@@ -194,11 +197,9 @@ defmodule MLElixir do
 
   # A function definition
   defp parse_ml_expr(env, {:fn, fun_meta, heads_ast}) do
-    IO.inspect {FN, heads_ast}
     heads = Enum.map(heads_ast, &parse_fn_head(env, &1))
     headTypes = Enum.map(heads, &(elem(&1, 1)[:type]))
-    IO.inspect {FN_HEADS, heads, headTypes}
-    type = {@type_func, [], :TODO}
+    type = {@type_func, headTypes, []}
     ast = {@tag_func, [type: type] ++ fun_meta, heads}
     {env, ast}
   end
@@ -206,7 +207,18 @@ defmodule MLElixir do
   # A function call
   defp parse_ml_expr(env, {name, call_meta, call_args}) when is_atom(name) and is_list(call_args) do
     case env.funs[name] do
-      nil -> raise %InvalidCall{message: "No such function found", name: name, meta: call_meta}
+      nil ->
+        case env.type_bindings[name] do # TODO:  Combine the func and bindings maps...
+          nil -> raise %InvalidCall{message: "No such function found", name: name, meta: call_meta}
+          {@type_ptr, ptr, _meta} ->
+            case env.type_vars[ptr] do
+              {@type_func, heads, _funcMeta} ->
+                # TODO:  Find matching head?  Or change @type_func to give an anonymous function like env.funs does?
+                :TODO
+              _ -> raise %InvalidCall{message: "Trying to call a non-function", name: name, meta: call_meta}
+            end
+          _var -> raise %InvalidCall{message: "Found var of unknown type", name: name, meta: call_meta}
+        end
       fun ->
         args = Enum.map(call_args, &elem(parse_ml_expr(env, &1), 1))
         {env, ast} = fun.(env, call_meta, args)
@@ -217,12 +229,16 @@ defmodule MLElixir do
 
 
   defp parse_fn_head(env, {:->, meta, [args, expr]}) do
+    {envBinding, bindings} = Enum.reduce(args, {env, []}, fn(binding_ast, {e, a}) ->
+      {en, binding} = parse_binding(e, binding_ast)
+      {en, a ++ [binding]}
+    end)
+    {_envExprInner, {_,bodyMeta,_}=exprInner} = parse_ml_expr(envBinding, expr)
     # TODO:  Parse bindings and expression based on the bindings
-    body = :TODO
-    args_types = [:TODO]
-    return_type = :TODO
-    type = {@type_func_head, {args_types, return_type}, :TODO}
-    {@tag_func_head, [type: type] ++ meta, [body]}
+    args_types = Enum.map(bindings, &(elem(&1,1)[:type]))
+    return_type = bodyMeta[:type]
+    type = {@type_func_head, {args_types, return_type}, []}
+    {@tag_func_head, [type: type] ++ meta, [bindings, exprInner]}
   end
 
 
@@ -239,7 +255,9 @@ defmodule MLElixir do
   defp parse_let(env, let_meta, [{:=, _equal_meta, [binding_ast, {:in, _in_meta, [inner_expr_ast, after_expr_ast]}]}]) do
     {envBinding, binding} = parse_binding(env, binding_ast)
     {envExprInner, exprInner} = parse_ml_expr(envBinding, inner_expr_ast)
+    # IO.inspect {:BLORP, envExprInner.type_vars, binding, exprInner}
     {envInnerResolved, bindingResolved} = resolve_binding(envExprInner, binding, exprInner)
+    # IO.inspect {:BLEEP, envInnerResolved.type_vars, bindingResolved}
     {envExprAfter, exprAfter} = parse_ml_expr(envInnerResolved, after_expr_ast)
     ast = {@tag_let, [type: type_of_expr(envExprAfter, exprAfter)] ++ let_meta, [bindingResolved, exprInner, exprAfter]}
     {envExprAfter, ast}
@@ -366,6 +384,7 @@ defmodule MLElixir do
             resolvedEnv = %{env |
               type_vars: Map.put(env.type_vars, ptr, tightestType)
             }
+            # IO.inspect {:BLERGH, exprType, t, ptr, resolvedEnv, binding}
             {resolvedEnv, binding}
         end
       t -> raise %UnificationError{type0: t, type1: exprType}
@@ -676,6 +695,7 @@ defmodule MLElixir do
 
 
   def resolve_types!(env, fromType, intoType) do
+    inspect {:RESOLVERINATING, env, fromType, intoType}
     type = resolve_types(env, fromType, intoType)
     if Exception.exception?(type) do
       raise type
@@ -817,8 +837,8 @@ defmodule MLElixir do
   end
 
   # Function head
-  defp reify_ml_expr_elixir(env, {@tag_func_head, meta, [body]}) do
-    {:->, meta, [reify_ml_expr_elixir(env, body)]}
+  defp reify_ml_expr_elixir(env, {@tag_func_head, meta, [args, body]}) do
+    {:->, meta, [Enum.map(args, &reify_ml_expr_elixir(env, &1)), reify_ml_expr_elixir(env, body)]}
   end
 
 end
