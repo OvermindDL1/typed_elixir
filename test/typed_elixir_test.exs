@@ -9,6 +9,76 @@ defmodule TypedElixirTest do
 
   test "Typed Module" do
     use TypedElixir
+
+    defmodulet TypedTest_Empty do
+    end
+
+
+    defmodulet TypedTest_Typed_Simple do
+      @spec simple() :: nil
+      def simple(), do: nil
+    end
+    assert nil === TypedTest_Typed_Simple.simple()
+
+    defmodulet TypedTest_Untyped_Simple do
+      def simple(), do: nil
+    end
+    assert nil === TypedTest_Untyped_Simple.simple()
+
+
+    # The extra type is to give a name to the type in simple, so the input and output become the same type.
+    # If the spec was `simple(any()) :: any()` then you could not state what the output is based on the input.
+    defmodulet TypedTest_Typed_Identity do
+      @type identity_type :: any()
+      @spec simple(identity_type) :: identity_type
+      def identity(x), do: x
+    end
+    assert 42 === TypedTest_Typed_Identity.identity(42)
+
+
+    defmodulet TypedTest_Untyped_Identity do
+      def identity(x), do: x
+    end
+    assert 42 === TypedTest_Untyped_Identity.identity(42)
+
+
+
+    # defmodulet TypedTest1 do
+    #   @moduledoc false
+    #
+    #   @spec simple() :: nil
+    #   def simple(), do: nil
+    #
+    #   @type identity_type :: any()
+    #   @spec identity(identity_type) :: identity_type
+    #   def identity(x), do: x
+    # end
+    #
+    # defmodulet TypedTest2 do
+    #   @moduledoc false
+    #
+    #   @spec simple(s) :: nil
+    #   def simple(s), do: String.capitalize(s)
+    # end
+    #
+    # defmodulet TypedTest3 do
+    #   @moduledoc false
+    #
+    #   alias String, as: S
+    #
+    #   @spec simple(s) :: nil
+    #   def simple(s), do: S.capitalize(s)
+    # end
+    #
+    # defmodulet TypedTest3 do
+    #   @moduledoc false
+    #
+    #   import String
+    #
+    #   @spec simple(s) :: nil
+    #   def simple(s), do: capitalize(s)
+    # end
+
     # defmodulet TypedTest do
     #   @moduledoc false
     #
@@ -42,34 +112,34 @@ defmodule TypedElixirTest do
     #   @spec replace(t, pattern | Regex.t, t, Keyword.t) :: t
     #   def replace(_,_,_,_), do: nil
     # end
-    #
-    # # IO.inspect TypedElixir.get_module_types_funspecs(String)
-    #
-    # # [{_modulename, objbin}] = Code.compile_quoted(quote do
-    # #   defmodule Testering do
-    # #     @type pattern :: nil
-    # #     @opaque t :: nil
-    # #     @spec replace(t, pattern | Regex.t, t, Keyword.t) :: t
-    # #     def replace(_,_,_,_), do: nil
-    # #   end
-    # # end)
-    # # {:ok, {_modname, [abstract_code: abscode]}} = :beam_lib.chunks(objbin, [:abstract_code])
-    # # {:raw_abstract_v1, code} = abscode
-    # # code
-    # # |> Enum.reduce(%{opaques: [], types: [], specs: []}, fn
-    # #   {:attribute, _line, :spec, {raw_fun, [raw_first_clause | _rest]} = newspec}, %{specs: spec} = acc ->
-    # #     # IO.inspect {"Found spec", raw_fun, raw_first_clause, _rest}
-    # #     %{acc | specs: [newspec|spec]}
-    # #   {:attribute, _line, :type, {name, type_form, var_form} = newtype}, %{types: type} = acc ->
-    # #     # IO.inspect {"Found type", name, type_form, var_form}
-    # #     %{acc | types: [newtype|type]}
-    # #   {:attribute, _line, :opaque, {name, type_form, var_form} = newopaque}, %{opaques: opaque} = acc ->
-    # #     # IO.inspect {"Found opaque", name, type_form, var_form}
-    # #     %{acc | opaques: [newopaque|opaque]}
-    # #   _, acc -> acc
-    # # end)
-    # # # |> IO.inspect
-    #
+
+    # IO.inspect TypedElixir.get_module_types_funspecs(String)
+
+    # [{_modulename, objbin}] = Code.compile_quoted(quote do
+    #   defmodule Testering do
+    #     @type pattern :: nil
+    #     @opaque t :: nil
+    #     @spec replace(t, pattern | Regex.t, t, Keyword.t) :: t
+    #     def replace(_,_,_,_), do: nil
+    #   end
+    # end)
+    # {:ok, {_modname, [abstract_code: abscode]}} = :beam_lib.chunks(objbin, [:abstract_code])
+    # {:raw_abstract_v1, code} = abscode
+    # code
+    # |> Enum.reduce(%{opaques: [], types: [], specs: []}, fn
+    #   {:attribute, _line, :spec, {raw_fun, [raw_first_clause | _rest]} = newspec}, %{specs: spec} = acc ->
+    #     # IO.inspect {"Found spec", raw_fun, raw_first_clause, _rest}
+    #     %{acc | specs: [newspec|spec]}
+    #   {:attribute, _line, :type, {name, type_form, var_form} = newtype}, %{types: type} = acc ->
+    #     # IO.inspect {"Found type", name, type_form, var_form}
+    #     %{acc | types: [newtype|type]}
+    #   {:attribute, _line, :opaque, {name, type_form, var_form} = newopaque}, %{opaques: opaque} = acc ->
+    #     # IO.inspect {"Found opaque", name, type_form, var_form}
+    #     %{acc | opaques: [newopaque|opaque]}
+    #   _, acc -> acc
+    # end)
+    # # |> IO.inspect
+
     # assert "Hello world" == IO.inspect(TypedTest.hello("Hello"))
   end
 

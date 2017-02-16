@@ -128,7 +128,12 @@ defmodule MLElixir do
 
 
   defmacro defml(opts) when is_list(opts) do
-    defml_impl(opts[:do], opts)
+    case opts[:do] do
+      nil ->
+        [ast] = opts
+        defml_impl(ast, [])
+      ast when is_tuple(ast) -> defml_impl(ast, opts)
+    end
   end
   defmacro defml(expr) do
     defml_impl(expr, [])
@@ -196,11 +201,10 @@ defmodule MLElixir do
   end
 
   # A function definition
-  defp parse_ml_expr(env, {:fn, fun_meta, heads_ast}) do
-    heads = Enum.map(heads_ast, &parse_fn_head(env, &1))
-    headTypes = Enum.map(heads, &(elem(&1, 1)[:type]))
-    type = {@type_func, headTypes, []}
-    ast = {@tag_func, [type: type] ++ fun_meta, heads}
+  defp parse_ml_expr(env, {:->, body_meta, [[{:fun, fun_meta, [head_ast]}], body_ast]}) do
+    {env, {_, headMeta, _} = head} = parse_fn_head(env, head_ast)
+    type = {@type_func, headMeta[:type], []}
+    ast = {@tag_func, [type: type] ++ fun_meta, [head]}
     {env, ast}
   end
 
