@@ -20,7 +20,7 @@ defmodule TypedElixirTest do
     end
     assert nil === TypedTest_Typed_Simple.simple()
 
-    assert_compile_time_throw {:NO_TYPE_UNIFICATION, %TypedElixir.TypeConst{type: :atom, meta: %{values: [nil]}}, %TypedElixir.TypeConst{type: :integer, meta: %{values: [1]}}}, fn ->
+    assert_compile_time_throw {:NO_TYPE_RESOLUTION, %TypedElixir.TypeConst{type: :integer, meta: %{values: [1]}}, %TypedElixir.TypeConst{type: :atom, meta: %{values: [nil]}}}, fn ->
       use TypedElixir
         defmodulet TypedTest_Typed_Simple do
           @spec simple() :: nil

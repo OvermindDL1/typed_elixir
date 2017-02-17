@@ -92,7 +92,7 @@ defmodule TypedElixir do
     end
 
     def get_scope(env) do
-      [scope | scopes] = env.scopes
+      [scope | _scopes] = env.scopes
       scope
     end
 
@@ -525,7 +525,7 @@ defmodule TypedElixir do
 
   def resolve_types(env, fromType, intoType)
   def resolve_types(_env, type, type), do: type
-  def resolve_types(env, type, %TypeGeneric{}), do: {env, type} |> IO.inspect
+  def resolve_types(env, type, %TypeGeneric{}), do: {env, type}
   # Keep TypePtr handling last
   def resolve_types(env, %TypePtr{ptr: fromPtr}=from, %TypePtr{ptr: intoPtr}=into) do
     intoType = HMEnv.get_type_var(env, intoPtr)
