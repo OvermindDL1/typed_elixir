@@ -7,29 +7,36 @@ defmodule TypedElixir do
     defstruct counter: -1, types: %{}, scopes: [], type_vars: %{}
 
 
+    def new_counter(env) do
+      counter = env.counter+1
+      env = %{env | counter: counter}
+      {env, counter}
+    end
+
+
     # Type helpers
 
-    def push_type(env, name, ast) do
-      types = Map.update(env.types, name, [ast], fn prior -> [ast | prior] end)
+    def push_type(env, key, type) do
+      types = Map.update(env.types, key, [type], fn prior -> [type | prior] end)
       env = %{env | types: types}
-      env = add_to_scope(env, :type, name)
+      env = add_to_scope(env, :type, key)
       env
     end
 
-    def get_type(env, name) do
-      case env.types[name] do
-        nil -> throw {:GET_TYPE, name, "does not exist"}
-        [] -> throw {:GET_TYPE, name, "does not exist"}
+    def get_type(env, key) do
+      case env.types[key] do
+        nil -> nil
+        [] -> nil
         [type | _] -> type
       end
     end
 
-    defp pop_type(env, name) do
-      types = case env.types[name] do
-        nil -> throw {:POP_TYPE, name, "does not exist"}
-        [] -> throw {:POP_TYPE, name, "does not exist"}
-        [_] -> Map.delete(env.types, name)
-        [_ | rest] -> Map.put(env.types, name, rest)
+    defp pop_type(env, key) do
+      types = case env.types[key] do
+        nil -> throw {:POP_TYPE, key, "does not exist"}
+        [] -> throw {:POP_TYPE, key, "does not exist"}
+        [_] -> Map.delete(env.types, key)
+        [_ | rest] -> Map.put(env.types, key, rest)
       end
       %{env | types: types}
     end
@@ -37,63 +44,103 @@ defmodule TypedElixir do
 
     # Type vars
 
-    def push_type_var(env, name, id, type) do
-      type_vars = Map.update(env.type_vars, name, [type], fn prior -> [type | prior] end)
+    def push_type_var(env, id, type) do
+      type_vars = Map.update(env.type_vars, id, [type], fn prior -> [type | prior] end)
       env = %{env | type_vars: type_vars}
-      env = add_to_scope(env, :type_var, name)
+      # env = add_to_scope(env, :type_var, id) # Unique ID for an entire module, plus might be used elsewhere...
       env
     end
 
     def get_type_var(env, id) do
       case env.type_vars[id] do
-        nil -> throw {:GET_TYPE_VAR, id, "does not exist"}
-        [] -> throw {:GET_TYPE_VAR, id, "does not exist"}
+        nil -> throw {:GET_TYPE_VAR, id, "does not exist", env.type_vars}
+        [] -> throw {:GET_TYPE_VAR, id, "does not exist", env.type_vars}
         [type_vars | _] -> type_vars
       end
     end
 
-    defp pop_type_var(env, id) do
-      type_vars = case env.type_vars[id] do
-        nil -> throw {:POP_TYPE_VAR, id, "does not exist"}
-        [] -> throw {:POP_TYPE_VAR, id, "does not exist"}
-        [_] -> Map.delete(env.type_vars, id)
-        [_ | rest] -> Map.put(env.type_vars, id, rest)
-      end
-      %{env | type_vars: type_vars}
+    # Never popping type vars because the types may be referenced elsewhere
+    # defp pop_type_var(env, id) do
+    #   type_vars = case env.type_vars[id] do
+    #     nil -> throw {:POP_TYPE_VAR, id, "does not exist"}
+    #     [] -> throw {:POP_TYPE_VAR, id, "does not exist"}
+    #     [_] -> Map.delete(env.type_vars, id)
+    #     [_ | rest] -> Map.put(env.type_vars, id, rest)
+    #   end
+    #   %{env | type_vars: type_vars}
+    # end
+
+    def update_type_var(env, id, type) do
+      type_vars = Map.update!(env.type_vars, id, fn [_ | prior] -> [type | prior] end)
+      env = %{env | type_vars: type_vars}
+      env
     end
 
 
     # Scope helpers
 
-    def push_scope(env, id) do
-      scopes = [{id, []} | env.scopes]
+    def push_scope(env, id, doc \\ nil) do
+      scopes = [{id, doc, []} | env.scopes]
       %{env | scopes: scopes}
     end
 
-    def pop_scope(env) do
-      [{id, scope} | scopes] = env.scopes
+    def pop_scope(env, id) do
+      [{^id, _, scope} | scopes] = env.scopes
       env = %{env | scopes: scopes}
       env = Enum.reduce(scope, env, fn ({key, value}, env) -> removed_from_scope(env, key, value) end)
       {env, scope}
     end
 
+    def get_scope(env) do
+      [scope | scopes] = env.scopes
+      scope
+    end
+
     defp add_to_scope(env, key, val) do
-      [{id, scope} | restScopes] = env.scopes
-      scopes = [{id, [{key, val} | scope]} | restScopes]
+      [{id, doc, scope} | restScopes] = env.scopes
+      scopes = [{id, doc, [{key, val} | scope]} | restScopes]
       %{env | scopes: scopes}
     end
 
     defp removed_from_scope(env, key, val)
     defp removed_from_scope(env, :type, name), do: pop_type(env, name)
-    defp removed_from_scope(env, :type_var, id), do: pop_type_var(env, id)
+    # defp removed_from_scope(env, :type_var, id), do: pop_type_var(env, id)
   end
 
 
 
+  defmodule TypeGeneric       ,do: defstruct []
   defmodule TypeConst         ,do: defstruct type: :"$$NO$TYPE$$", meta: %{}
-  defmodule TypePtr           ,do: defstruct ptr: -1
-  defmodule TypeCall          ,do: defstruct args: nil, return: nil # blah(args)
-  defmodule TypeCallIndirect  ,do: defstruct args: nil, return: nil # blah.(args)
+  defmodule TypeCall          ,do: defstruct args: nil, return: %TypeGeneric{} # blah(args)
+  defmodule TypeCallIndirect  ,do: defstruct args: nil, return: %TypeGeneric{} # blah.(args)
+  defmodule TypeModule        ,do: defstruct []
+  defmodule TypePtr do
+    defstruct ptr: -1
+    def new(env, subtype \\ %TypeGeneric{}) do
+      {env, ptr} = HMEnv.new_counter(env)
+      type = %TypePtr{ptr: ptr}
+      env = HMEnv.push_type_var(env, ptr, subtype)
+      {env, type}
+    end
+  end
+
+  defmodule Type do
+    # Refined containers
+    defmodule Plain   ,do: defstruct [:type]
+    defmodule Named   ,do: defstruct [:name, :type]
+    defmodule Refined ,do: defstruct [:name, :type, :meta]
+
+    # Types
+    defmodule Const   ,do: defstruct [:name]
+    defmodule App     ,do: defstruct [:name]
+    defmodule Func    ,do: defstruct [:args_rtype, :return_rtype]
+    defmodule Var     ,do: defstruct [:var_ptr]
+
+    # Var Types
+    defmodule Unbound ,do: defstruct [:id, :level]
+    defmodule Link    ,do: defstruct [:type]
+    defmodule Generic ,do: defstruct [:id]
+  end
 
 
 
@@ -106,7 +153,7 @@ defmodule TypedElixir do
 
 
   defp debug(val, opts, section, prefix \\ nil) do
-    debugOpts = opts[:debug] || true #[:ALIAS] #[]
+    debugOpts = opts[:debug] || []
     isEnabled = true === debugOpts || section in debugOpts || :all in debugOpts
     if isEnabled do
       if prefix do
@@ -125,6 +172,7 @@ defmodule TypedElixir do
   defmacro defmodulet(alias_name, opts) when is_list(opts) do
     block_module = opts[:do]
     opts = Keyword.delete(opts, :do)
+# opts = [debug: true] ++ opts
     debug(:defmodulet, opts, :defmodulet)
 
     alias_name = Macro.expand(alias_name, __CALLER__)
@@ -142,8 +190,11 @@ defmodule TypedElixir do
     env = %HMEnv{} |> HMEnv.push_scope(:top)
       |> debug(opts, :ENV)
 
-    block_module = typecheck_module(env, opts, alias_name, block_module)
+    {env, block_module} = typecheck_module(env, opts, alias_name, block_module)
       |> debug(opts, :TYPECHECKED)
+
+    {_env, _scope} = env |> HMEnv.pop_scope(:top)
+      |> debug(opts, :FINAL_ENV)
 
     quote do
       defmodule unquote(alias_name) do
@@ -162,24 +213,36 @@ defmodule TypedElixir do
 
 
   defp typecheck_module(env, opts, name, body)
-  defp typecheck_module(env, opts, name, nil) when is_atom(name), do: nil
+  defp typecheck_module(env, _opts, name, nil) when is_atom(name), do: {env, nil}
   defp typecheck_module(env, opts, name, {:__block__, meta, body_asts}) when is_atom(name) do
-    env = HMEnv.push_scope(env, {:module, name})
+    env = HMEnv.push_scope(env, :module, name)
     {env, bodies} = Enum.reduce(body_asts, {env, []}, fn(module_entry_ast, {env, bodies}) ->
       {env, body} = type_check_body(env, opts, module_entry_ast)
       {env, [body | bodies]}
     end)
     bodies = :lists.reverse(bodies)
+    Enum.map(bodies, &debug(&1, opts, :MODULE_BODY, name))
+    # TODO:  Parse out the module information to make a type-map in a callback function
+    {env, _scope} = HMEnv.pop_scope(env, :module)
+    type = %TypeModule{}
+    ast = {:__block__, [type: type] ++ meta, bodies}
+    {env, ast}
   end
 
 
 
   defp type_check_body(env, opts, module_entry_ast)
   defp type_check_body(env, opts, {:def, meta, [head_ast, body_ast]}) do
-    {env, head} = type_check_def_head(env, opts, head_ast)
-    :TODO_BODY_DEF
-    # ast = {:def, meta, [head, body]}
-    # {env, ast}
+    {env, head} = type_check_def_head(env, opts, head_ast) # This will push scope with the name
+    {env, body} = type_check_def_body(env, opts, body_ast)
+    func_type = get_type_of(head)
+    return_type = get_type_of(body)
+    # {env, return_type} = unify_types!(env, func_type.return, return_type)
+    resolve_types!(env, return_type, func_type.return) # Can the return_type be returned by the func returns?
+    func_type = %{func_type | return: return_type}
+    ast = {:def, [type: func_type] ++ meta, [head, body]}
+    {env, _scope} = HMEnv.pop_scope(env, :def)
+    {env, ast}
   end
   defp type_check_body(env, opts, {:@, attrMeta, [attr_ast]}) do
     {env, attr} = type_check_attribute(env, opts, attr_ast)
@@ -191,64 +254,343 @@ defmodule TypedElixir do
 
   defp type_check_attribute(env, opts, attr_ast)
   defp type_check_attribute(env, opts, {:spec, specMeta, [spec_ast]}) do
-    {env, type} = parse_type_from_spec(env, opts, spec_ast)
+    {env, type} = parse_type_from_specattr(env, opts, spec_ast)
     ast = {:spec, [type: type] ++ specMeta, [spec_ast]}
     {env, ast}
   end
-  defp type_check_attribute(env, opts, attr_ast) do
+  defp type_check_attribute(env, opts, {:type, specMeta, [spec_ast]}) do
+    {env, type} = parse_type_from_typeattr(env, opts, spec_ast)
+    ast = {:type, [type: type] ++ specMeta, [spec_ast]}
+    {env, ast}
+  end
+  defp type_check_attribute(env, _opts, {:moduledoc, _, _}=attr_ast) do
+    {env, attr_ast}
+  end
+  defp type_check_attribute(env, _opts, {:doc, _, _}=attr_ast) do
+    {env, attr_ast}
+  end
+  defp type_check_attribute(env, _opts, attr_ast) do
     IO.inspect {:UNKNOWN_ATTRIBUTE, attr_ast}
     {env, attr_ast}
   end
 
 
 
+  defp type_check_def_body(env, opts, body_ast)
+  defp type_check_def_body(env, opts, [do: expression_or_block]) do
+    {env, do_ast} = type_check_expression(env, opts, expression_or_block)
+    ast = [do: do_ast]
+    {env, ast}
+  end
+  defp type_check_def_body(_env, _opts, body_ast) do
+    throw {:TODO_DEF_BODY, body_ast}
+  end
+
+
+
+  defp type_check_expression(env, opts, expression_or_block)
+  # General constants
+  defp type_check_expression(env, _opts, const)
+    when is_atom(const)
+    when is_integer(const)
+    when is_float(const), do: {env, const}
+  # Bindings
+  defp type_check_expression(env, _opts, {name, meta, scope}) when is_atom(name) and is_atom(scope) do
+    key = {:binding, name}
+    case HMEnv.get_type(env, key) do
+      nil -> throw {:BINDING_NOT_FOUND, name}
+      type ->
+        ast = {name, [type: type] ++ meta, scope}
+        {env, ast}
+    end
+  end
+  # Direct function call
+  defp type_check_expression(env, opts, {name, meta, args_ast}) when is_atom(name) and is_list(args_ast) do
+    arity = length(args_ast)
+    key = {:function, name, arity}
+    {env, args} = Enum.reduce(args_ast, {env, []}, fn(arg_ast, {env, args}) ->
+      {env, arg} = type_check_expression(env, opts, arg_ast)
+      {env, args ++ [arg]}
+    end)
+    args_types = Enum.map(args, &get_type_of/1)
+    case HMEnv.get_type(env, key) do
+      nil -> throw {:FUNCTION_NOT_FOUND, name, arity, env.types}
+      %TypeCall{args: call_args}=type when length(call_args)===arity ->
+        _ = Enum.zip(call_args, args_types) |> Enum.map(fn({fromType, intoType}) ->
+          resolve_types!(env, fromType, intoType)
+        end)
+        ast = {name, [type: type.return] ++ meta, args}
+        {env, ast}
+      invalidType -> throw {:DEF_HEAD_DEFNAME, "Invalid type for name", name, meta, args, invalidType, env}
+    end
+  end
+  defp type_check_expression(_env, _opts, expression_or_block) do
+    throw {:TODO_EXPRESSION, expression_or_block}
+  end
+
+
+
   defp type_check_def_head(env, opts, head_ast)
-  defp type_check_def_head(env, opts, {name, meta, args}) when is_atom(name) do
-    env
-    argCount = length(args)
-    env = HMEnv.push_scope(env, {:DEF})
-    case HMEnv.get_type(env, {name, argCount}) do
-      nil -> throw {:TODO_DEF_HEAD_DEFNAME_INFER, name, meta, args}
-      %TypeCall{} -> throw {:TODO_DEF_HEAD_DEFNAME_STATIC, name, meta, args}
-      invalidType -> throw {:DEF_HEAD_DEFNAME, "Invalid type for name", name, meta, args, invalidType}
+  defp type_check_def_head(env, opts, {:when, whenMeta, [{name, _meta, _args_ast}=head_ast, when_ast]}) when is_atom(name) do
+    {env, head} = type_check_def_head_when(env, opts, head_ast, when_ast)
+    ast = {:when, whenMeta, [head, when_ast]}
+    {env, ast}
+  end
+  defp type_check_def_head(env, opts, {name, _meta, _args_ast}=head_ast) when is_atom(name) do
+    type_check_def_head_when(env, opts, head_ast, nil)
+  end
+
+
+
+  defp type_check_def_head_when(env, opts, head_ast, when_ast)
+  defp type_check_def_head_when(env, opts, {name, meta, args_ast}, when_ast) do
+    env = HMEnv.push_scope(env, :def, name)
+    argCount = length(args_ast)
+    case HMEnv.get_type(env, {:function, name, argCount}) do
+      nil -> # No pre-defined type for this fun-name, use the inferred value
+        {env, args} = type_check_fun_bindings(env, opts, args_ast)
+        {env, args} = type_check_fun_when(env, opts, args, when_ast)
+        args_types = Enum.map(args, &get_type_of/1)
+        type = %TypeCall{args: args_types}
+        ast = {name, [type: type] ++ meta, args}
+        {env, ast}
+      %TypeCall{args: tArgs} = callType when length(tArgs)===argCount ->
+        {env, args} = type_check_fun_bindings(env, opts, args_ast, tArgs)
+        {env, args} = type_check_fun_when(env, opts, args, when_ast)
+        args_types = Enum.map(args, &get_type_of/1)
+        _ = Enum.zip(callType.args, args_types) |> Enum.map(fn({fromType, intoType}) ->
+          resolve_types!(env, fromType, intoType)
+        end)
+        ast = {name, [type: callType] ++ meta, args}
+        {env, ast}
+      invalidType -> throw {:DEF_HEAD_DEFNAME, "Invalid type for name", name, meta, args_ast, invalidType, env}
     end
   end
 
 
 
+  defp type_check_fun_when(env, opts, args, when_ast)
+  # There is no :when condition
+  defp type_check_fun_when(env, _opts, args, nil) do
+    {env, args}
+  end
+  # There are no args, but there is a :when condition, need to handle that in case it is closed over
+  defp type_check_fun_when(env, _opts, [], when_ast) do
+    throw {:TODO_REFINE_FUNC_WHEN_NO_ARGS, when_ast, env}
+  end
+  # There is a when condition with args
+  defp type_check_fun_when(env, _opts, args, when_ast) do
+    throw {:TODO_REFINE_ARGS_WITH_WHEN, args, when_ast, env}
+  end
+
+
+
+  defp type_check_fun_bindings(env, opts, args_ast)
+  defp type_check_fun_bindings(env, opts, args_ast) do
+    {env, args} = Enum.reduce(args_ast, {env, []}, fn(arg_ast, {env, prior}) ->
+      {env, arg} = type_check_binding(env, opts, arg_ast)
+      {env, prior ++ [arg]}
+    end)
+    {env, args}
+  end
+  defp type_check_fun_bindings(env, opts, args_ast, argTypes) do
+    {env, args} = Enum.zip(args_ast, argTypes) |> Enum.reduce({env, []}, fn({arg_ast, arg_type}, {env, prior}) ->
+      {env, arg} = type_check_binding(env, opts, arg_ast, arg_type)
+      {env, prior ++ [arg]}
+    end)
+    {env, args}
+  end
+
+
+
+  defp type_check_binding(env, opts, binding, type \\ nil)
+  defp type_check_binding(env, _opts, {name, meta, scope}, type) when is_atom(name) and is_atom(scope) do
+    {env, type} = case type do
+      nil ->
+        TypePtr.new(env)
+      type ->
+        TypePtr.new(env, type)
+        # {env, type}
+    end
+    key = {:binding, name}
+    env = HMEnv.push_type(env, key, type)
+    ast = {name, [type: type] ++ meta, scope}
+    {env, ast}
+  end
+  defp type_check_binding(_env, _opts, binding, type) do
+    throw {:TODO_BINDING, binding, type}
+  end
+
+
+  # defp infer_type_from_funhead
 
 
 
 
-  defp parse_type_from_spec(env, opts, spec_ast)
-  defp parse_type_from_spec(env, opts, {:::, meta, [{name, nameMeta, args_ast}, return_ast]}) when is_atom(name) do
+
+  defp parse_type_from_typespec(env, opts, typespec_ast)
+  defp parse_type_from_typespec(env, _opts, {:any, _meta, []}) do
+    {env, type} = TypePtr.new(env, %TypeGeneric{})
+    {env, type}
+  end
+
+
+
+  defp parse_type_from_typeattr(env, opts, type_ast)
+  # A typespec that does not take an argument to refine the type
+  defp parse_type_from_typeattr(env, opts, {:::, _meta, [{typename, _nameMeta, scope}, typespec_ast]}) when is_atom(scope) do
+    {env, type} = parse_type_from_typespec(env, opts, typespec_ast)
+    # Name the type for later use
+    key = {:typename, typename}
+    env = HMEnv.push_type(env, key, type)
+    {env, type}
+  end
+
+
+
+  defp parse_type_from_specattr(env, opts, spec_ast)
+  defp parse_type_from_specattr(env, opts, {:::, _meta, [{name, _nameMeta, args_ast}, return_ast]}) when is_atom(name) do
     argCount = length(args_ast)
     {env, argsTypes} = Enum.reduce(args_ast, {env, []}, fn (arg_ast, {env, args}) ->
-      {env, arg} = parse_type_from_spec_arg(env, opts, arg_ast)
+      # {env, arg} = parse_type_from_specattr_arg(env, opts, arg_ast)
+      {env, arg} = parse_type_from(env, opts, arg_ast)
       {env, [arg | args]}
-      throw "TODO:  parse_type_from_spec  args"
     end)
     argsTypes = :lists.reverse(argsTypes)
     {env, returnType} = parse_type_from(env, opts, return_ast)
     type = %TypeCall{args: argsTypes, return: returnType}
-    env = HMEnv.push_type(env, {name, argCount}, type)
+    env = HMEnv.push_type(env, {:function, name, argCount}, type)
     {env, type}
   end
 
 
 
 
-  defp parse_type_from_spec_arg(env, opts, arg_ast)
-  defp parse_type_from_spec_arg(env, opts, arg_ast) do
-    # Use parse_type_from on each type?
-    throw {:TODO_PARSE_SPEC_ARG, arg_ast}
-  end
+  # defp parse_type_from_specattr_arg(env, opts, arg_ast)
+  # defp parse_type_from_specattr_arg(env, opts, {typename, _meta, scope}) when is_atom(typename) and is_atom(scope) do
+  #   case HMEnv.get_type(env, {:typename, typename}) do
+  #     nil -> throw {:TYPENAME_DOES_NOT_EXIST, typename}
+  #     type -> {env, type}
+  #   end
+  # end
+  # defp parse_type_from_specattr_arg(env, opts, arg_ast) do
+  #   # Use parse_type_from on each type?
+  #   throw {:TODO_PARSE_SPEC_ARG, arg_ast}
+  # end
 
   defp parse_type_from(env, opts, type_ast)
-  defp parse_type_from(env, opts, nil), do: {env, %TypeConst{type: nil}}
-  defp parse_type_from(env, opts, type_ast) do
+  # Constants
+  defp parse_type_from(env, _opts, atom) when is_atom(atom), do: {env, %TypeConst{type: :atom, meta: %{values: [atom]}}}
+  defp parse_type_from(env, _opts, int) when is_integer(int), do: {env, %TypeConst{type: :integer, meta: %{values: [int]}}}
+  defp parse_type_from(env, _opts, float) when is_float(float), do: {env, %TypeConst{type: :float, meta: %{values: [float]}}}
+  # 0-arg built-in types
+  defp parse_type_from(env, _opts, {built_in, _meta, []}) when built_in in [:integer, :float], do: {env, %TypeConst{type: built_in}}
+  defp parse_type_from(env, _opts, {typename, _meta, scope}) when is_atom(typename) and is_atom(scope) do
+    case HMEnv.get_type(env, {:typename, typename}) do
+      nil -> throw {:TYPENAME_DOES_NOT_EXIST, typename}
+      type -> {env, type}
+    end
+  end
+  defp parse_type_from(_env, _opts, type_ast) do
     throw {:TODO_PARSE_TYPE, type_ast}
   end
+
+
+
+
+  # Get type of
+  defp get_type_of(thing)
+  defp get_type_of(atom) when is_atom(atom), do: %TypeConst{type: :atom, meta: %{values: [atom]}}
+  defp get_type_of(int) when is_integer(int), do: %TypeConst{type: :integer, meta: %{values: [int]}}
+  defp get_type_of(float) when is_float(float), do: %TypeConst{type: :float, meta: %{values: [float]}}
+  defp get_type_of([do: do_ast]), do: get_type_of(do_ast)
+  defp get_type_of({_, meta, _}), do: Keyword.fetch!(meta, :type)
+
+
+
+
+
+
+  # Resolve a type to a type
+  def resolve_types!(env, fromType, intoType) do
+    inspect {:RESOLVERINATING, env, fromType, intoType}
+    type = resolve_types(env, fromType, intoType)
+    if Exception.exception?(type) do
+      raise type
+    else
+      type
+    end
+  end
+
+
+  def resolve_types(env, fromType, intoType)
+  def resolve_types(_env, type, type), do: type
+  def resolve_types(env, type, %TypeGeneric{}), do: {env, type} |> IO.inspect
+  # Keep TypePtr handling last
+  def resolve_types(env, %TypePtr{ptr: fromPtr}=from, %TypePtr{ptr: intoPtr}=into) do
+    intoType = HMEnv.get_type_var(env, intoPtr)
+    intoPath = resolve_types(env, from, intoType)
+    if Exception.exception?(intoPath) do
+      fromType = HMEnv.get_type_var(env, fromPtr)
+      resolve_types(env, fromType, into)
+    else
+      intoPath
+    end
+  end
+  def resolve_types(env, fromType, %TypePtr{ptr: ptr}) do
+    intoType = HMEnv.get_type_var(env, ptr)
+    resolve_types(env, fromType, intoType)
+  end
+  def resolve_types(env, %TypePtr{ptr: ptr}, intoType) do
+    fromType = HMEnv.get_type_var(env, ptr)
+    resolve_types(env, fromType, intoType)
+  end
+  # Catch-all
+  def resolve_types(_env, fromType, intoType) do
+    throw {:NO_TYPE_RESOLUTION, fromType, intoType}
+  end
+
+
+
+  # Unify two types
+  def unify_types!(env, t0, t1) do
+    type = unify_types(env, t0, t1)
+    if Exception.exception?(type) do
+      raise type
+    else
+      type
+    end
+  end
+
+
+  def unify_types(env, t0, t1)
+  def unify_types(env, t, t), do: {env, t}
+  def unify_types(env, %TypeGeneric{}, t), do: {env, t}
+  def unify_types(env, t, %TypeGeneric{}), do: {env, t}
+  # Keep TypePtr handling last
+  def unify_types(env, %TypePtr{ptr: ptr0}=t0, %TypePtr{ptr: ptr1}=t1) do
+    type0 = HMEnv.get_type_var(env, ptr1)
+    path0 = unify_types(env, t0, type0)
+    if Exception.exception?(path0) do
+      type1 = HMEnv.get_type_var(env, ptr0)
+      unify_types(env, type1, t1)
+    else
+      path0
+    end
+  end
+  def unify_types(env, t0, %TypePtr{ptr: ptr}) do
+    t1 = HMEnv.get_type_var(env, ptr)
+    unify_types(env, t0, t1)
+  end
+  def unify_types(env, %TypePtr{ptr: ptr}, t1) do
+    t0 = HMEnv.get_type_var(env, ptr)
+    unify_types(env, t0, t1)
+  end
+  # Catch-all
+  def unify_types(_env, t0, t1) do
+    throw {:NO_TYPE_UNIFICATION, t0, t1}
+  end
+
 
 
 

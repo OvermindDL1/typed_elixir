@@ -699,7 +699,7 @@ defmodule MLElixir do
 
 
   def resolve_types!(env, fromType, intoType) do
-    inspect {:RESOLVERINATING, env, fromType, intoType}
+    # inspect {:RESOLVERINATING, env, fromType, intoType}
     type = resolve_types(env, fromType, intoType)
     if Exception.exception?(type) do
       raise type
