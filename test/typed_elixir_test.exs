@@ -20,7 +20,7 @@ defmodule TypedElixirTest do
     end
     assert nil === TypedTest_Typed_Simple.simple()
 
-    assert_compile_time_throw {:NO_TYPE_RESOLUTION, %TypedElixir.TypeConst{type: :integer, meta: %{values: [1]}}, %TypedElixir.TypeConst{type: :atom, meta: %{values: [nil]}}}, fn ->
+    assert_compile_time_throw {:NO_TYPE_RESOLUTION, %TypedElixir.Type.Const{const: :integer, meta: %{values: [1]}}, %TypedElixir.Type.Const{const: :atom, meta: %{values: [nil]}}}, fn ->
       use TypedElixir
         defmodulet TypedTest_Typed_Simple do
           @spec simple() :: nil
@@ -38,6 +38,19 @@ defmodule TypedElixirTest do
   end
 
 
+  test "Untyped - 0-arg - recursive - no-return" do
+    assert_compile_time_throw {:INVALID_ASSIGNMENT_NOT_ALLOWED, :no_return}, fn ->
+      use TypedElixir
+      defmodulet TypedTest_Untyped_Recursive_Simple_BAD_NoSet do
+        def simple(), do: simple()
+        def willFail() do
+          x = simple()
+        end
+      end
+    end
+  end
+
+
   test "Typed - 1-arg - identity" do
     # The extra type is to give a name to the type in simple, so the input and output become the same type.
     # If the spec was `simple(any()) :: any()` then you could not state that the output type is based on the input type.
@@ -47,6 +60,15 @@ defmodule TypedElixirTest do
       def identity(x), do: x
     end
     assert 42 === TypedTest_Typed_Identity.identity(42)
+
+    assert_compile_time_throw {:NO_TYPE_RESOLUTION, %TypedElixir.Type.Const{const: :atom, meta: %{values: [nil]}}, %TypedElixir.Type.Ptr.Generic{id: 0, named: true}}, fn ->
+      use TypedElixir
+      defmodulet TypedTest_Typed_Identity_badtype do
+        @type identity_type :: any()
+        @spec identity(identity_type) :: identity_type
+        def identity(_x), do: nil
+      end
+    end
   end
 
 
@@ -58,13 +80,30 @@ defmodule TypedElixirTest do
   end
 
 
+  test "Typed - 1-arg - returns nil" do
+    defmodulet TypedTest_Typed_Identity_AnyReturn do
+      @spec identity(any()) :: any()
+      def identity(_x), do: nil
+    end
+    assert nil === TypedTest_Typed_Identity_AnyReturn.identity(42)
+  end
+
+
+  test "Untyped - 1-arg - returns nil" do
+    defmodulet TypedTest_Untyped_Identity_AnyReturn do
+      def identity(_x), do: nil
+    end
+    assert nil === TypedTest_Untyped_Identity_AnyReturn.identity(42)
+  end
+
+
   test "Typed - 1-arg - recursive" do
     defmodulet TypedTest_Typed_Recursive_Counter do
       @spec counter(integer()) :: integer()
       def counter(x), do: counter(x)
     end
 
-    assert_compile_time_throw {:NO_TYPE_RESOLUTION, %TypedElixir.TypeConst{type: :integer, meta: %{}}, %TypedElixir.TypeConst{type: :float, meta: %{values: [6.28]}}}, fn ->
+    assert_compile_time_throw {:NO_TYPE_RESOLUTION, %TypedElixir.Type.Const{const: :float, meta: %{values: [6.28]}}, %TypedElixir.Type.Const{const: :integer, meta: %{}}}, fn ->
       use TypedElixir
       defmodulet TypedTest_Typed_Recursive_Counter_Bad do
         @spec counter(integer()) :: integer()
@@ -74,28 +113,34 @@ defmodule TypedElixirTest do
   end
 
 
+  test "Untyped - 1-arg - recursive" do
+    defmodulet TypedTest_Untyped_Recursive_Counter do
+      def counter(x), do: counter(x)
+    end
+
+    defmodulet TypedTest_Untyped_Recursive_Counter_RecallingDifferentType do
+      def counter(_x), do: counter(6.28)
+    end
+  end
+
+
   test "Typed - 0-arg/1-arg" do
-    defmodulet TypedTest_Typed_2func do
+    defmodulet TypedTest_Typed_MultiFunc0 do
       @spec simple() :: nil
       def simple(), do: nil
 
       @type identity_type :: any()
       @spec identity(identity_type) :: identity_type
       def identity(x), do: x
-    end
 
-    assert_compile_time_throw {:NO_TYPE_RESOLUTION, %TypedElixir.TypeConst{type: :integer, meta: %{}}, %TypedElixir.TypeConst{type: :float, meta: %{values: [6.28]}}}, fn ->
-      use TypedElixir
-      defmodulet TypedTest_Typed_2func do
-        @spec simple() :: nil
-        def simple(), do: nil
+      @spec call_simple(any()) :: any()
+      def call_simple(_x), do: simple()
 
-        @type identity_type :: any()
-        @spec identity(identity_type) :: identity_type
-        def identity(x), do: x
-        @spec identity1(identity_type) :: identity_type
-        def identity1(x), do: nil
-      end
+      @spec call_simple_constrain_to_nil(any()) :: nil
+      def call_simple_constrain_to_nil(_x), do: simple()
+
+      @spec call_simple_through_identity(any()) :: nil
+      def call_simple_through_identity(_x), do: simple() |> identity()
     end
   end
 
