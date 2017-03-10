@@ -31,4 +31,32 @@ defmodule CompileTimeAssertions do
       assert unquote(expected_error) === unquote(Macro.escape(actual_exception))
     end
   end
+
+  defmacro match_compile_time_raise(expected_exception, fun) do
+    actual_exception =
+      try do
+        Code.eval_quoted(fun)
+        %DidNotRaise{}
+      rescue
+        e -> e
+      end
+
+    quote do
+      unquote(expected_exception) = unquote(actual_exception)
+    end
+  end
+
+  defmacro match_compile_time_throw(expected_error, fun) do
+    actual_exception =
+      try do
+        Code.eval_quoted(fun)
+        :DID_NOT_THROW
+      catch
+        e -> e
+      end
+
+    quote do
+      unquote(expected_error) = unquote(Macro.escape(actual_exception))
+    end
+  end
 end

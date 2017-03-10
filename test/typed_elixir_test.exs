@@ -61,7 +61,7 @@ defmodule TypedElixirTest do
     end
     assert 42 === TypedTest_Typed_Identity.identity(42)
 
-    assert_compile_time_throw {:NO_TYPE_RESOLUTION, %TypedElixir.Type.Const{const: :atom, meta: %{values: [nil]}}, %TypedElixir.Type.Ptr.Generic{id: 0, named: true}}, fn ->
+    match_compile_time_throw {:NO_TYPE_RESOLUTION, %TypedElixir.Type.Const{const: :atom, meta: %{values: [nil]}}, %TypedElixir.Type.Ptr.Generic{id: _, named: true, meta: []}}, fn ->
       use TypedElixir
       defmodulet TypedTest_Typed_Identity_badtype do
         @type identity_type :: any()

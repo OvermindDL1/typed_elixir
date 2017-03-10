@@ -1,5 +1,5 @@
 defmodule TypedElixir.HMEnv do
-  defstruct counters: %{}, types: %{}, scopes: [], type_ptrs: %{}
+  defstruct counters: %{}, types: %{}, scopes: [], type_ptrs: %{}, user: []
 
 
   def new_counter(env, key) do
@@ -57,7 +57,6 @@ defmodule TypedElixir.HMEnv do
     end
   end
 
-  # Never popping type vars because the types may be referenced elsewhere
   # defp pop_type_ptr(env, ptr) do
   #   type_ptrs = case env.type_ptrs[ptr] do
   #     nil -> throw {:POP_type_ptr, ptr, "does not exist"}
@@ -109,10 +108,10 @@ defmodule TypedElixir.HMEnv do
 
   def map_env(env, enumerable, func), do: map_env(env, enumerable, func, [])
 
-  def map_env(env, [], _func, reversed_results) do
+  defp map_env(env, [], _func, reversed_results) do
     {env, :lists.reverse(reversed_results)}
   end
-  def map_env(env, [value | rest], func, reversed_results) do
+  defp map_env(env, [value | rest], func, reversed_results) do
     {env, result} = func.(env, value)
     reversed_results = [result | reversed_results]
     map_env(env, rest, func, reversed_results)
@@ -123,10 +122,10 @@ defmodule TypedElixir.HMEnv do
     zipmap_env(env, enumerableLeft, enumerableRight, func, [])
   end
 
-  def zipmap_env(env, [], [], _func, reversed_results) do
+  defp zipmap_env(env, [], [], _func, reversed_results) do
     {env, :lists.reverse(reversed_results)}
   end
-  def zipmap_env(env, [left | restLeft], [right | restRight], func, reversed_results) do
+  defp zipmap_env(env, [left | restLeft], [right | restRight], func, reversed_results) do
     {env, result} = func.(env, left, right)
     reversed_results = [result | reversed_results]
     zipmap_env(env, restLeft, restRight, func, reversed_results)

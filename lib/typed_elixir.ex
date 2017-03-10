@@ -111,7 +111,7 @@ defmodule TypedElixir do
     Enum.map(bodies, &debug(&1, opts, :MODULE_BODY, name))
     # TODO:  Parse out the module information to make a type-map in a callback function
     {env, _scope} = HMEnv.pop_scope(env, :module)
-    {env, type} = Type.Module.new(env)
+    {env, type} = Type.Module.new(env, %{})
     ast = {:__block__, [type: type] ++ meta, bodies}
     {env, ast}
   end
