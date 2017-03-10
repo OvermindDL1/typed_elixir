@@ -107,7 +107,8 @@ defmodule MLElixirOld do
             (env, meta, [{_,leftMeta,_}, {_,rightMeta,_}]=args) ->
               left = leftMeta[:type]
               right = rightMeta[:type]
-              {typeTag, type, _typeMeta} = MLElixir.unify_types!(env, left, right)
+              # {typeTag, type, _typeMeta} = MLElixir.unify_types!(env, left, right)
+              {typeTag, type, _typeMeta} = TypedElixir.Type.unify_types!(env, left, right)
               # TODO:  Make addition refine the values properly on the type
               if typeTag === :"$$TCONST$$" and type in [:int, :float] do
                 ast = {:"$$CALL$$", [type: {typeTag, type, []}] ++ meta, [{Kernel, :+} | args]}
@@ -201,7 +202,8 @@ defmodule MLElixirOld do
   end
 
   # A function definition
-  defp parse_ml_expr(env, {:->, body_meta, [[{:fun, fun_meta, [head_ast]}], body_ast]}) do
+  defp parse_ml_expr(env, {:->, _body_meta, [[{:fun, fun_meta, [head_ast]}], body_ast]}) do
+    throw {:TODO, :parse_ml_expr, body_ast}
     {env, {_, headMeta, _} = head} = parse_fn_head(env, head_ast)
     type = {@type_func, headMeta[:type], []}
     ast = {@tag_func, [type: type] ++ fun_meta, [head]}
@@ -218,7 +220,7 @@ defmodule MLElixirOld do
             case env.type_vars[ptr] do
               {@type_func, heads, _funcMeta} ->
                 # TODO:  Find matching head?  Or change @type_func to give an anonymous function like env.funs does?
-                :TODO
+                throw {:TODO, :parse_ml_expr, :heads, heads}
               _ -> raise %InvalidCall{message: "Trying to call a non-function", name: name, meta: call_meta}
             end
           _var -> raise %InvalidCall{message: "Found var of unknown type", name: name, meta: call_meta}

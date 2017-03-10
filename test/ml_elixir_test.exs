@@ -8,32 +8,69 @@ defmodule MLElixirTest do
   import MLElixir
 
 
-  defmodule NativeTest do
-
-    def identity(x), do: x
-
-    def __ml_open__ do
-      %{
-        funs: %{
-          identity: fn
-            (env, meta, [{_,argMeta,_}]=args) ->
-              ast = {:"$$CALL$$", [type: argMeta[:type]] ++ meta, [{MLElixirTest.NativeTest, :identity} | args]}
-              {env, ast}
-            end,
-          },
-        types: %{
-        },
-      }
-    end
-
-  end
+  # defmodule NativeTest do
+  #
+  #   def identity(x), do: x
+  #
+  #   def __ml_open__ do
+  #     %{
+  #       funs: %{
+  #         identity: fn
+  #           (env, meta, [{_,argMeta,_}]=args) ->
+  #             ast = {:"$$CALL$$", [type: argMeta[:type]] ++ meta, [{MLElixirTest.NativeTest, :identity} | args]}
+  #             {env, ast}
+  #           end,
+  #         },
+  #       types: %{
+  #       },
+  #     }
+  #   end
+  #
+  # end
 
   defmlmodule MLModuleTest_Specific do
     type t = MLModuleTest.type_definition
     type Specific = MLModuleTest_Generalized.(t: float)
+    type st = Specific.t
+    type a(t) = t
+    type b(c) = c
+    type ra = a(integer)
+    type rb = b(integer)
+
+    type testering_enum
+    | none
+    | one
+    | integer integer
+    | two
+    | float float
+    | float2 float
+    # | t integer # Single value?
+    # | t_f0 integer, float # multiple value?
+    # | i_f1(integer, float) # Hmm, what for...
+    # | t_f2{integer, float} # Hmm... default tuple?
+    # | t_f3[i: integer, f: float] # Keyword list version maybe?  Or just make a normal list?
+    # | %t_f4{t: integer, f: float} # Map version?
+    # | tuple {integer}
+    # | record %{integer: integer}
+    # | map %{integer => float}
+    # | gadt_syntax = integer
 
     def testering0 | t = 42
+    def testering1 | st = 6.28
+    def testering2 | ra = 42
+    def testering3 | rb = 42
+    def testering4 | a(integer) = 42
+    def testering5 | a(float) = 6.28
+    def testering6 | testering_enum = none() # Just testing that it works with 0-args too, elixir ast oddness reasons
+    def testering7 | testering_enum = one
+    def testering8 | testering_enum = two
+    def testering9 | testering_enum = integer # Curried!
+    def testering10 | testering_enum = integer 42
+    def testering11(x) | testering_enum = integer x
   end
+
+  # defmlmodule MLModuleTest_Specific_Module | MLModuleTest.(t: int) do
+  # end
 
   test "MLModuleTest's" do
     assert MLModuleTest.test_int_untyped() === 42
@@ -56,6 +93,19 @@ defmodule MLElixirTest do
     assert MLModuleTest.test_blockT1(6.28) === 6.28
 
     assert MLModuleTest_Generalized.blah(42) === 42
+
+    assert MLModuleTest_Specific.testering0() === 42
+    assert MLModuleTest_Specific.testering1() === 6.28
+    assert MLModuleTest_Specific.testering2() === 42
+    assert MLModuleTest_Specific.testering3() === 42
+    assert MLModuleTest_Specific.testering4() === 42
+    assert MLModuleTest_Specific.testering5() === 6.28
+    assert MLModuleTest_Specific.testering6() === :none
+    assert MLModuleTest_Specific.testering7() === :one
+    assert MLModuleTest_Specific.testering8() === :two
+    assert MLModuleTest_Specific.testering9().(42) === {:integer, 42} # Ooo, can auto-curry enum heads!  Guarded too
+    assert MLModuleTest_Specific.testering10() === {:integer, 42}
+    assert MLModuleTest_Specific.testering11(42) === {:integer, 42}
   end
 
   # test "literals" do

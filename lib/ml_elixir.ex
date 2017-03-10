@@ -14,6 +14,15 @@ defmodule MLElixir do
     def func(name, arity), do: {:func, name, arity}
     def binding(name), do: {:binding, name}
     def generic(name), do: {:generic, name}
+    def enumeration(name), do: {:enumeration, name}
+    def call(name), do: {:call, name}
+  end
+
+
+  defp add_call(env, name, call_type, type) do
+    key = Key.call(name)
+    value = {call_type, type}
+    HMEnv.push_type(env, key, value)
   end
 
 
@@ -149,7 +158,7 @@ defmodule MLElixir do
 
 
   defp parse_defmlmodule_body(env, body)
-  defp parse_defmlmodule_body(env, {:__block__, body_meta, body_exprs}) do
+  defp parse_defmlmodule_body(env, {:__block__, _body_meta, body_exprs}) do
     {env, exprs} = HMEnv.map_env(env, body_exprs, &parse_module_expression/2)
     exprs = Enum.filter(exprs, &(&1))
     {env, exprs}
@@ -159,12 +168,15 @@ defmodule MLElixir do
 
   defp parse_module_expression(env, expr)
   # Module definition
-  defp parse_module_expression(env, {:type, meta, [{:=, equals_meta, [{:__aliases__, _name_meta, [name]}, type_expr]}]}) when is_atom(name) do
-    # TODO:  Ugh, wiped old code, let's do this better...
-    throw {:TODO, :handle_module_definition_and_possible_refinement}
+  defp parse_module_expression(env, {:type, _meta, [{:=, _equals_meta, [{:__aliases__, _name_meta, [name]}, type_expr]}]}) when is_atom(name) do
+    {env, type} = parse_type_expression(env, type_expr)
+    key = Key.typename(name)
+    env = HMEnv.push_type(env, key, type)
+    ast = {:type, [type: type], [name, type]}
+    {env, ast}
   end
   # Type definition
-  defp parse_module_expression(env, {:type, meta, [{:=, equals_meta, [{name, _name_meta, name_context = nil}, type_expr]}]}) when is_atom(name) and is_atom(name_context) do
+  defp parse_module_expression(env, {:type, _meta, [{:=, _equals_meta, [{name, _name_meta, args}, type_expr]}]}) when args === [] or args === nil do
     # TODO:  Verify the type is not a module type
     {env, type} = parse_type_expression(env, type_expr)
     key = Key.typename(name)
@@ -172,8 +184,24 @@ defmodule MLElixir do
     ast = {:type, [type: type], [name, type]}
     {env, ast}
   end
+  # Type definition with args
+  defp parse_module_expression(env, {:type, _meta, [{:=, _equals_meta, [{name, _name_meta, args}, type_expr]}]}) when is_list(args) do
+    env = HMEnv.push_scope(env, :type, name)
+    {env, args_types} = parse_type_bindings(env, args)
+    {env, type} = parse_type_expression(env, type_expr)
+    {env, _scope} = HMEnv.pop_scope(env, :type)
+    {env, type} = Type.App.new(env, type, args_types)
+    key = Key.typename(name)
+    env = HMEnv.push_type(env, key, type)
+    ast = {:type, [type: type], [name, type]}
+    {env, ast}
+  end
+  # Type enum definition
+  defp parse_module_expression(env, {:type, meta, [{:|, _bar_meta, args}]}) do
+    parse_module_type_enum(env, meta, args)
+  end
   # Type declaration
-  defp parse_module_expression(env, {:type, meta, [{name, name_meta, name_context = nil}]}) when is_atom(name_context) do
+  defp parse_module_expression(env, {:type, _meta, [{name, _name_meta, name_context = nil}]}) when is_atom(name_context) do
     {env, type} = Type.Ptr.Generic.new_ptr(env, true, name: name)
     key = Key.typename(name)
     env = HMEnv.push_type(env, key, type)
@@ -184,7 +212,7 @@ defmodule MLElixir do
   defp parse_module_expression(env, {:def, def_meta, def_args}) do
     parse_module_def(env, def_meta, def_args)
   end
-  # Also allow 'let' too
+  # Also allow 'let' as well
   defp parse_module_expression(env, {:let, def_meta, def_args}) do
     parse_module_def(env, def_meta, def_args)
   end
@@ -194,6 +222,18 @@ defmodule MLElixir do
 
 
 
+
+  defp parse_type_bindings(env, args) do
+    HMEnv.map_env(env, args, fn
+      (env, {name, _name_meta, nil}) ->
+        {env, type} = Type.Ptr.Unbound.new_ptr(env)
+        key = Key.typename(name)
+        env = HMEnv.push_type(env, key, type)
+        {env, {name, type}}
+      (_env, arg) -> throw {:TODO, :parse_type_bindings, arg}
+    end)
+  end
+
   defp parse_type_expression(env, type_expr)
   # Primitives
   defp parse_type_expression(env, {:integer, _meta, nil}), do: Type.Const.new(env, :integer)
@@ -202,7 +242,7 @@ defmodule MLElixir do
   defp parse_type_expression(env, integer) when is_integer(integer), do: Type.Const.new(env, :integer, values: [integer])
   defp parse_type_expression(env, float) when is_float(float), do: Type.Const.new(env, :float, values: [float])
   # Named Generic
-  defp parse_type_expression(env, {:+, _meta, [{name, _name_meta, name_context = nil}]}) when is_atom(name) and is_atom(name_context) do
+  defp parse_type_expression(env, {:!, _meta, [{name, _name_meta, name_context = nil}]}) when is_atom(name) and is_atom(name_context) do
     key = Key.generic(name)
     case HMEnv.get_type(env, key) do
       nil ->
@@ -213,19 +253,50 @@ defmodule MLElixir do
     end
   end
   # Type refinement
-  defp parse_type_expression(env, {{:., _dot_meta, type_name_ast}, _meta, refinements}) do
+  defp parse_type_expression(env, {{:., dot_meta, type_name_ast}, _meta, refinements}) do
     unrefined_type =
       case type_name_ast do
+        # Module Name or type itself
+        [{:__aliases__, _module_name_meta, [name]}] when is_atom(name) ->
+          # Test if it is a typename first
+          key = Key.typename(name)
+          case HMEnv.get_type(env, key) do
+            nil ->
+              module = Module.concat([name])
+              {:module, ^module} = wait_ensure_loaded(module)
+              ml_module_info = module.ml_module_info()
+              ml_module_info.type # The module_type
+            type -> {env, type}
+          end
         # Module type itself
         [{:__aliases__, _module_name_meta, names}] when is_list(names) ->
           module = Module.concat(names)
           {:module, ^module} = wait_ensure_loaded(module)
           ml_module_info = module.ml_module_info()
           ml_module_info.type # The module_type
+        # Type in module type name or the module itself
+        [{:__aliases__, _module_name_meta, [name]}, type_name] when is_atom(name) and is_atom(type_name) ->
+          # Test if it is a typename first
+          key = Key.typename(name)
+          case HMEnv.get_type(env, key) do
+            nil ->
+              module = Module.concat([name])
+              {:module, ^module} = wait_ensure_loaded(module)
+              ml_module_info = module.ml_module_info()
+              case ml_module_info.type.types[type_name] do
+                nil -> throw {:NO_TYPE_ON_MODULE, dot_meta[:line], module, type_name}
+                type -> type
+              end
+            %Type.Module{types: types} ->
+              case types[type_name] do
+                nil -> throw {:NO_TYPE_ON_MODULE_TYPE, dot_meta[:line], name, type_name}
+                type -> type
+              end
+            type -> throw {:UNSUPPORTED_TYPE, dot_meta[:line], name, type_name, type}
+          end
         # Type in module
         [{:__aliases__, _module_name_meta, names}, type_name] when is_list(names) and is_atom(type_name) ->
           module = Module.concat(names)
-          Process.sleep(500)
           {:module, ^module} = wait_ensure_loaded(module)
           ml_module_info = module.ml_module_info()
           case ml_module_info.type.types[type_name] do
@@ -251,15 +322,29 @@ defmodule MLElixir do
                   {env, type}
               end
           end)
+        {env, type}
       unknown -> throw {:TODO, :unhandled_exported_type, unknown}
     end
   end
   # Named type
-  defp parse_type_expression(env, {name, _meta, nil}) when is_atom(name) do
+  defp parse_type_expression(env, {name, _meta, name_context}) when is_atom(name) and (name_context === nil or name_context === []) do
     key = Key.typename(name)
     case HMEnv.get_type(env, key) do
       nil -> throw {:TYPENAME_DOES_NOT_EXIST, name}
       type -> {env, type}
+    end
+  end
+  # Applied named type
+  defp parse_type_expression(env, {name, _meta, args}) when is_atom(name) and is_list(args) do
+    key = Key.typename(name)
+    case HMEnv.get_type(env, key) do
+      nil -> throw {:TYPENAME_DOES_NOT_EXIST, name}
+      %Type.App{} = type ->
+        {env, args_types} = HMEnv.map_env(env, args, &parse_type_expression/2)
+        {env, type} = Type.App.refine(env, type, args_types)
+        {env, type}
+      type ->
+        throw {:unable_to_apply_to_type, type}
     end
   end
   defp parse_type_expression(_env, type_expr) do
@@ -269,7 +354,10 @@ defmodule MLElixir do
 
   defp wait_ensure_loaded(module, times \\ 20, sleep \\ 50)
   defp wait_ensure_loaded(module, times, _sleep) when times <= 0 do
-    Code.ensure_compiled(module)
+    case Code.ensure_compiled(module) do
+      {:module, ^module} -> {:module, module}
+      _ -> throw {:unable_to_locate_module_named, module}
+    end
   end
   defp wait_ensure_loaded(module, times, sleep) do
     # TODO:  Figure out how to tell elixir to stop until this thing is loaded...
@@ -280,6 +368,117 @@ defmodule MLElixir do
         wait_ensure_loaded(module, times - 1, sleep)
     end
   end
+
+
+
+
+  defp parse_module_type_enum(env, meta, args)
+  # Enum declaration 0-arg
+  defp parse_module_type_enum(env, meta, [{:=, _equals_meta, [{name, _name_meta, name_context}, {:enum, _enum_meta, flags}]}, cases])
+  when (name_context === nil or name_context === []) and (flags === nil or is_list(flags)) do
+    flags = List.wrap(flags)
+    parse_module_type_enum(env, meta, name, flags, cases)
+  end
+  # enum-less helper
+  defp parse_module_type_enum(env, meta, [{name, _name_meta, name_context}, cases]) when (name_context === nil or name_context === []) do
+    flags = []
+    parse_module_type_enum(env, meta, name, flags, cases)
+  end
+  defp parse_module_type_enum(_env, _meta, args) do
+    throw {:TODO, :unhandled_parse_module_type_enum, args}
+  end
+
+  def add_atom_prefix(prefix, between \\ "_", atom) do
+    prefix = to_string(prefix)
+    between = to_string(between)
+    atom = to_string(atom)
+    String.to_atom(prefix <> between <> atom)
+  end
+
+  defp parse_module_type_enum(env, meta, name, flags, cases)
+  defp parse_module_type_enum(env, meta, name, flags, cases) do
+    {env, heads} = parse_module_type_enum_heads(env, meta, flags, cases)
+    heads =
+      case :long_name in flags do
+        false -> heads
+        true ->
+          Enum.map(heads, fn
+            {head_name, head_type} when is_atom(head_name) ->
+              head_name = add_atom_prefix(name, head_name)
+              {head_name, head_type}
+            head_name when is_atom(head_name) ->
+              add_atom_prefix(name, head_name)
+          end)
+      end
+    {env, type} = Type.GADT.new(env, heads)
+    key = Key.typename(name)
+    env = HMEnv.push_type(env, key, type)
+    env =
+      case :no_register_heads in flags do
+        true -> env
+        false ->
+          {env, _} =
+            HMEnv.map_env(env, heads, fn
+              (env, {head_name, head_type}) when is_atom(head_name) ->
+                key = Key.enumeration(head_name)
+                value = {head_type, type}
+                env = HMEnv.push_type(env, key, value)
+                call_type = {:enumeration_head, [type: type], [head_name, head_type]}
+                env = add_call(env, head_name, call_type, type)
+                {env, nil}
+              (env, head_name) when is_atom(head_name) ->
+                key = Key.enumeration(head_name)
+                value = {nil, type}
+                env = HMEnv.push_type(env, key, value)
+                call_type = {:const, [type: type], head_name}
+                env = add_call(env, head_name, call_type, type)
+                {env, nil}
+            end)
+          env
+      end
+    ast = {:type, [type: type], [name, type]}
+    {env, ast}
+  end
+  # defp parse_module_type_enum(_env, meta, name, flags, cases) do
+  #   throw {:TODO, :unhandled_parse_module_type_enum_flags, meta, name, flags, cases}
+  # end
+
+
+  defp parse_module_type_enum_heads(env, meta, flags, cases)
+  defp parse_module_type_enum_heads(env, _meta, flags, {:|, line_meta, [case_left, case_right]}) do
+    {env, left} = parse_module_type_enum_heads(env, line_meta, flags, case_left)
+    {env, right} = parse_module_type_enum_heads(env, line_meta, flags, case_right)
+    heads = left ++ right
+    {env, heads}
+  end
+  defp parse_module_type_enum_heads(env, _meta, _flags, {name, _name_meta, name_context}) when is_atom(name) and (name_context === nil or name_context === []) do
+    head = name
+    {env, [head]}
+  end
+  defp parse_module_type_enum_heads(env, _meta, flags, {name, _name_meta, [{:|, line_meta, [type_arg, cases]}]}) when is_atom(name) do
+    {env, right} = parse_module_type_enum_heads(env, line_meta, flags, cases)
+    {env, type} = parse_type_expression(env, type_arg)
+    head = {name, type}
+    heads = [head | right]
+    {env, heads}
+  end
+  # defp parse_module_type_enum_heads(env, _meta, flags, {name, _name_meta, [{:|, line_meta, [{name2, _name_meta2, [type_arg]}, cases]}]}) when is_atom(name) do
+  #   throw {:wha?, name, name2, type_arg, cases}
+  #   {env, right} = parse_module_type_enum_heads(env, line_meta, flags, cases)
+  #   {env, type} = parse_type_expression(env, type_arg)
+  #   head = {name, type}
+  #   heads = [head | right]
+  #   {env, heads}
+  # end
+  defp parse_module_type_enum_heads(env, _meta, _flags, {name, _name_meta, [type_arg]}) when is_atom(name) do
+    {env, type} = parse_type_expression(env, type_arg)
+    head = {name, type}
+    {env, [head]}
+  end
+  defp parse_module_type_enum_heads(_env, meta, flags, cases) do
+    throw {:TODO, :unhandled_parse_module_type_enum_heads, meta, flags, cases}
+  end
+
 
 
 
@@ -386,6 +585,7 @@ defmodule MLElixir do
     body_type = body_meta[:type]
     {env, return_type} = Type.resolve_types!(env, body_type, return_type)
     {env, _scope} = HMEnv.pop_scope(env, :def)
+    {env, args_types} = Type.generify_unbound(env, args_types)
     {env, func_type} = Type.Func.new(env, args_types, return_type, false)
     env = HMEnv.push_type(env, func_key, func_type)
     ast = {:def, [type: func_type] ++ meta, [name, args, body]}
@@ -434,13 +634,13 @@ defmodule MLElixir do
   end
   # Untyped Binding
   defp parse_module_def_head_arg(env, {name, meta, context = nil}) when is_atom(name) and is_atom(context) do
-    {env, type} = Type.Ptr.Generic.new_ptr(env, false)
+    {env, type} = Type.Ptr.Unbound.new_ptr(env)
     key = Key.binding(name)
     env = HMEnv.push_type(env, key, type)
     ast = {:binding, [type: type] ++ meta, name}
     {env, ast}
   end
-  defp parse_module_def_head_arg(env, arg) do
+  defp parse_module_def_head_arg(_env, arg) do
     throw {:TODO, :unhandled_def_head_arg, arg}
   end
 
@@ -451,10 +651,48 @@ defmodule MLElixir do
   defp parse_ml_expression(env, {name, meta, context = nil}) when is_atom(name) and is_atom(context) do
     key = Key.binding(name)
     case HMEnv.get_type(env, key) do
-      nil -> throw {:BINDING_NOT_FOUND, name}
+      nil ->
+        # Else check if there is an enumeration head exposed with this name
+        key = Key.enumeration(name)
+        case HMEnv.get_type(env, key) do
+          nil -> throw {:BINDING_NOT_FOUND, name}
+          {nil, type} ->
+            ast = {:const, [type: type], name} # argumentless enum head
+            {env, ast}
+          {apply_type, type} ->
+            ast = {:enumeration_head, [type: type], [name, apply_type]}
+            {env, ast}
+        end
       type ->
         ast = {:binding, [type: type] ++ meta, [name]}
         {env, ast}
+    end
+  end
+  # Call 'something'
+  defp parse_ml_expression(env, {name, meta, args}) when is_atom(name) and is_list(args) do
+    key = Key.call(name)
+    case HMEnv.get_type(env, key) do
+      nil -> throw {:CALL_NOT_FOUND, name}
+      {{:const, const_meta, value}, type} when args === [] ->
+        ast = {:const, [type: type] ++ const_meta ++ meta, value}
+        {env, ast}
+      {{:enumeration_head, head_meta, [name, apply_type]}, type} ->
+        case apply_type do
+          %Type.Const{const: _const} ->
+            case args do
+              [] -> {env, {:enumeration_head, [type: type], [name, apply_type]}}
+              [arg] ->
+                {env, {_, arg_meta, _} = arg} = parse_ml_expression(env, arg)
+                arg_type = arg_meta[:type]
+                {env, _resolved_type} = Type.resolve_types!(env, arg_type, apply_type)
+                {env, name_type} = Type.Const.new(env, :atom, values: [name])
+                name_ast = {:const, [type: name_type], name}
+                ast = {:enum_single, [type: type] ++ head_meta, [name_ast, arg]}
+                {env, ast}
+            end
+          unhandled -> throw {:TODO, :unhandled_call_enumeration_type, unhandled}
+        end
+      unhandled -> throw {:TODO, :unhandled_call_type, args, unhandled}
     end
   end
   # Literals
@@ -471,7 +709,6 @@ defmodule MLElixir do
   end
 
 
-
   defp block_if_not_block(ast)
   defp block_if_not_block({:__block__, meta, exprs}=ast) when is_list(meta) and is_list(exprs), do: ast
   defp block_if_not_block(ast), do: {:__block__, [], [ast]}
@@ -486,15 +723,16 @@ defmodule MLElixir do
     ml_module_info_ast = generate_ml_module_info(env, module_type)
     modulebody_ast = [name_ast, [do: {:__block__, [], body_ast ++ ml_module_info_ast}]]
     defmodule_ast = {:defmodule, [context: __MODULE__, import: Kernel] ++ name_meta, modulebody_ast}
+    defmodule_ast
     # throw env.types
   end
-  defp convert_to_elixir_module_ast(env, name, name_meta, module_mlast, module_type) do
+  defp convert_to_elixir_module_ast(_env, name, name_meta, module_mlast, _module_type) do
     throw [:TODO, :convert_to_elixir_module_ast, name, name_meta, module_mlast]
   end
 
 
 
-  defp generate_ml_module_info(env, module_type) do
+  defp generate_ml_module_info(_env, module_type) do
     ml_module_info_ast = quote do
       def ml_module_info do
         %{
@@ -508,21 +746,75 @@ defmodule MLElixir do
 
 
   defp convert_to_elixir_module_body_ast(env, module_expr)
-  defp convert_to_elixir_module_body_ast(env, {:type, _, _}), do: nil # Ignore type definitions for per-expression code ast
+  defp convert_to_elixir_module_body_ast(_env, {:type, _, _}), do: nil # Ignore type definitions for per-expression code ast
   defp convert_to_elixir_module_body_ast(env, {:def, def_meta, [name, args, body_expr]}) when is_atom(name) and is_list(args) and not is_list(body_expr) do
-    args = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
-    name_ast = {name, [], args}
+    args_ast = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
+    name_ast = {name, [], args_ast}
+    guards_ast =
+      Enum.map(args, fn
+        {:binding, m, _} = binding_ast ->
+          bound_ast = convert_to_elixir_module_body_ast(env, binding_ast)
+          case m[:type] do
+            nil -> throw {:TODO, :AST_WITHOUT_TYPE, binding_ast}
+            type ->
+              case Type.get_type_or_ptr_type(env, type) do # TODO:  Type the guards?  Probably no point...
+                {env, %Type.Ptr.Generic{}} -> []
+                {env, %Type.Const{const: :integer}} -> {:is_integer, m, [bound_ast]}
+                {env, %Type.Const{const: :float}} -> {:is_float, m, [bound_ast]}
+                {env, %Type.Const{const: :atom}} -> {:is_atom, m, [bound_ast]}
+                {env, unhandled} -> throw {:TODO, :unhandled_arg_guard_type, unhandled, binding_ast}
+              end
+          end
+        unhandled -> throw {:TODO, :unhandled_arg_guard, unhandled}
+      end)
+      |> List.flatten()
+    when_ast =
+      case guards_ast do
+        [] -> name_ast
+        guards -> # 'and' them all together...
+          guards = Enum.reduce(guards, fn(left, right) -> {:and, [], [left, right]} end)
+          {:when, [], [name_ast, guards]}
+      end
     body_ast = convert_to_elixir_module_body_ast(env, body_expr)
-    ast = {:def, def_meta, [name_ast, [do: body_ast]]}
+    ast = {:def, def_meta, [when_ast, [do: body_ast]]}
     ast
   end
-  defp convert_to_elixir_module_body_ast(env, {:binding, meta, [name]}) when is_atom(name) do
+  defp convert_to_elixir_module_body_ast(_env, {:binding, meta, [name]}) when is_atom(name) do
     {name, meta, nil}
   end
-  defp convert_to_elixir_module_body_ast(env, {:binding, meta, name}) when is_atom(name) do
+  defp convert_to_elixir_module_body_ast(_env, {:binding, meta, name}) when is_atom(name) do
     {name, meta, nil}
   end
-  defp convert_to_elixir_module_body_ast(env, {:const, _const_meta, value}), do: value
+  # An unapplied enumeration head, make an anonymous function to hold it
+  defp convert_to_elixir_module_body_ast(_env, {:enumeration_head, meta, [name, apply_type]}) do
+    {:fn, fn_meta, fn_body} =
+      case apply_type do
+        %Type.Const{const: :integer} ->
+          name_var = {name, [], nil}
+          quote do
+            fn (unquote(name_var)) when is_integer(unquote(name_var)) -> {unquote(name), unquote(name_var)} end
+          end
+        %Type.Const{const: :float} ->
+          name_var = {name, [], nil}
+          quote do
+            fn (unquote(name_var)) when is_float(unquote(name_var)) -> {unquote(name), unquote(name_var)} end
+          end
+        %Type.Const{const: :atom} ->
+          name_var = {name, [], nil}
+          quote do
+            fn (unquote(name_var)) when is_atom(unquote(name_var)) -> {unquote(name), unquote(name_var)} end
+          end
+        type -> throw {:TODO, :unhandled_elixir_enumeration_type, type}
+      end
+    {:fn, meta ++ fn_meta, fn_body}
+  end
+  # single values enums shall be represented
+  defp convert_to_elixir_module_body_ast(env, {:enum_single, _meta, [arg0, arg1]}) do
+    arg0 = convert_to_elixir_module_body_ast(env, arg0)
+    arg1 = convert_to_elixir_module_body_ast(env, arg1)
+    {arg0, arg1}
+  end
+  defp convert_to_elixir_module_body_ast(_env, {:const, _meta, value}), do: value
   defp convert_to_elixir_module_body_ast(_env, module_expr) do
     throw {:TODO, :unhandled_module_body_expr, module_expr}
   end
