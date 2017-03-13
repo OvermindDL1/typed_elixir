@@ -27,31 +27,31 @@ defmodule MLElixir do
 
 
 
-  defmodule Core do
-
-    def __ml_open__ do
-      %{
-        funs: %{
-          # +: fn # Passes in the environment, meta of the call, and the calls arguments AST's
-          #   (env, meta, [{_,leftMeta,_}, {_,rightMeta,_}]=args) ->
-          #     left = leftMeta[:type]
-          #     right = rightMeta[:type]
-          #     {typeTag, type, _typeMeta} = MLElixir.unify_types!(env, left, right)
-          #     # TODO:  Make addition refine the values properly on the type
-          #     if typeTag === :"$$TCONST$$" and type in [:int, :float] do
-          #       ast = {:"$$CALL$$", [type: {typeTag, type, []}] ++ meta, [{Kernel, :+} | args]}
-          #       {env, ast}
-          #     else
-          #       raise %InvalidCall{message: "Invalid arguments types, only `int` or `float` is allowed", name: :+, meta: meta}
-          #     end
-          #   end,
-        },
-        types: %{
-        },
-      }
-    end
-
-  end
+  # defmodule Core do
+  #
+  #   def __ml_open__ do
+  #     %{
+  #       funs: %{
+  #         # +: fn # Passes in the environment, meta of the call, and the calls arguments AST's
+  #         #   (env, meta, [{_,leftMeta,_}, {_,rightMeta,_}]=args) ->
+  #         #     left = leftMeta[:type]
+  #         #     right = rightMeta[:type]
+  #         #     {typeTag, type, _typeMeta} = MLElixir.unify_types!(env, left, right)
+  #         #     # TODO:  Make addition refine the values properly on the type
+  #         #     if typeTag === :"$$TCONST$$" and type in [:int, :float] do
+  #         #       ast = {:"$$CALL$$", [type: {typeTag, type, []}] ++ meta, [{Kernel, :+} | args]}
+  #         #       {env, ast}
+  #         #     else
+  #         #       raise %InvalidCall{message: "Invalid arguments types, only `int` or `float` is allowed", name: :+, meta: meta}
+  #         #     end
+  #         #   end,
+  #       },
+  #       types: %{
+  #       },
+  #     }
+  #   end
+  #
+  # end
 
 
 
