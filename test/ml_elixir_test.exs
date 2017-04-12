@@ -2,7 +2,7 @@ defmodule MLElixirTest do
   @moduledoc false
 
   use ExUnit.Case
-  import CompileTimeAssertions
+  # import CompileTimeAssertions
 
   doctest MLElixir
   import MLElixir
@@ -65,8 +65,33 @@ defmodule MLElixirTest do
     def testering7 | testering_enum = one
     def testering8 | testering_enum = two
     def testering9 | testering_enum = integer # Curried!
+    def testering9x(x) | testering_enum = integer x # Not-Curried!
     def testering10 | testering_enum = integer 42
     def testering11(x) | testering_enum = integer x
+
+    # Records (I.E. Erlang/Elixir atom() keyed maps, like structs)
+    type record0 = %{} # Empty record
+    type record1 = %{
+      x: integer,
+      y: float,
+    }
+    type record2(t) = %{t: t}
+    type record_ex_0 = %{_: record0, z: integer}
+    type record_ex_1 = %{_: record1, z: integer}
+    type record_ex_2(t) = %{_: record2(t), z: integer}
+    type record_ex_2_float = %{_: record2(float), z: integer}
+    # type record_ex_sub(t) = %{_: t, z: integer} # Need to support unbound's perhaps?
+
+    def testering_record0 | record0 = %{}
+    def testering_record1 | record1 = %{x: 42, y: 6.28}
+    def testering_record2(i) | record1 = %{x: i, y: 6.28}
+    def testering_record3(t | !t) | record2(!t) = %{t: t}
+    def testering_record4 | record_ex_0 = %{z: 42}
+    def testering_record5 | record_ex_1 = %{x: 42, y: 6.28, z: 42}
+    def testering_record6 | record_ex_2(integer) = %{t: 42, z: 42}
+    def testering_record7(t | !t) | record_ex_2(!t) = %{t: t, z: 42}
+    def testering_record8 | record_ex_2_float = %{t: 6.28, z: 42}
+    # def testering_record9 | record_ex_sub(record2(float)) = %{t: 6.28, z: 42}
   end
 
   # defmlmodule MLModuleTest_Specific_Module | MLModuleTest.(t: int) do
@@ -93,6 +118,7 @@ defmodule MLElixirTest do
     assert MLModuleTest.test_blockT1(6.28) === 6.28
 
     assert MLModuleTest_Generalized.blah(42) === 42
+    assert MLModuleTest_Generalized.bloo(42) === 42
 
     assert MLModuleTest_Specific.testering0() === 42
     assert MLModuleTest_Specific.testering1() === 6.28
@@ -104,8 +130,20 @@ defmodule MLElixirTest do
     assert MLModuleTest_Specific.testering7() === :one
     assert MLModuleTest_Specific.testering8() === :two
     assert MLModuleTest_Specific.testering9().(42) === {:integer, 42} # Ooo, can auto-curry enum heads!  Guarded too
+    assert MLModuleTest_Specific.testering9x(42) === {:integer, 42}
     assert MLModuleTest_Specific.testering10() === {:integer, 42}
     assert MLModuleTest_Specific.testering11(42) === {:integer, 42}
+
+    # Records
+    assert MLModuleTest_Specific.testering_record0() === %{}
+    assert MLModuleTest_Specific.testering_record1() === %{x: 42, y: 6.28}
+    assert MLModuleTest_Specific.testering_record2(42) === %{x: 42, y: 6.28}
+    assert MLModuleTest_Specific.testering_record3(42) === %{t: 42}
+    assert MLModuleTest_Specific.testering_record4() === %{z: 42}
+    assert MLModuleTest_Specific.testering_record5() === %{x: 42, y: 6.28, z: 42}
+    assert MLModuleTest_Specific.testering_record6() === %{t: 42, z: 42}
+    assert MLModuleTest_Specific.testering_record7(42) === %{t: 42, z: 42}
+    assert MLModuleTest_Specific.testering_record8() === %{t: 6.28, z: 42}
   end
 
   # test "literals" do

@@ -326,6 +326,35 @@ defmodule MLElixir do
       unknown -> throw {:TODO, :unhandled_exported_type, unknown}
     end
   end
+  # 2-tuple Record type, fix to normal call because Elixir AST design...
+  defp parse_type_expression(env, {arg0, arg1}), do: parse_type_expression(env, {:{}, [], [arg0, arg1]})
+  defp parse_type_expression(env, {:%{}, _meta, [{:_, update_from_ast} | args]}) do
+    {env, update_from_unresolved} = parse_type_expression(env, update_from_ast)
+    {env, update_from_resolved} = Type.get_type_or_ptr_type(env, update_from_unresolved)
+    {env, update_from} = Type.App.get_type(env, update_from_resolved)
+    case update_from do
+      %Type.Record{} = record ->
+        {env, typed_labels} =
+          HMEnv.map_env(env, args, fn
+            (env, {label, type_ast}) when is_atom(label) ->
+              {env, type} = parse_type_expression(env, type_ast)
+              {env, {label, type}}
+          end)
+        {env, type} = Type.Record.extend(env, record, typed_labels)
+        {env, type}
+      unhandled_type -> throw {:invalid_record_type, :not_record_type, unhandled_type, update_from_ast}
+    end
+  end
+  defp parse_type_expression(env, {:%{}, _meta, args}) do
+    {env, typed_labels} =
+      HMEnv.map_env(env, args, fn
+        (env, {label, type_ast}) when is_atom(label) ->
+          {env, type} = parse_type_expression(env, type_ast)
+          {env, {label, type}}
+      end)
+    {env, type} = Type.Record.new(env, typed_labels)
+    {env, type}
+  end
   # Named type
   defp parse_type_expression(env, {name, _meta, name_context}) when is_atom(name) and (name_context === nil or name_context === []) do
     key = Key.typename(name)
@@ -668,6 +697,22 @@ defmodule MLElixir do
         {env, ast}
     end
   end
+  # Create record
+  defp parse_ml_expression(env, {:%{}, meta, args_ast}) when is_list(args_ast) do
+    {env, kwargs} =
+      HMEnv.map_env(env, args_ast, fn(env, {label, ast}) ->
+        {env, expr} = parse_ml_expression(env, ast)
+        {env, {label, expr}}
+      end)
+    {env, kwtypes} =
+      HMEnv.map_env(env, kwargs, fn(env, {label, {_, meta, _}}) ->
+        type = meta[:type]
+        {env, {label, type}}
+      end)
+    {env, type} = Type.Record.new(env, kwtypes)
+    ast = {:record, [type: type] ++ meta, kwargs}
+    {env, ast}
+  end
   # Call 'something'
   defp parse_ml_expression(env, {name, meta, args}) when is_atom(name) and is_list(args) do
     key = Key.call(name)
@@ -813,6 +858,11 @@ defmodule MLElixir do
     arg0 = convert_to_elixir_module_body_ast(env, arg0)
     arg1 = convert_to_elixir_module_body_ast(env, arg1)
     {arg0, arg1}
+  end
+  # Records (in Elixir as maps)
+  defp convert_to_elixir_module_body_ast(env, {:record, meta, args}) do
+    args_ast = Enum.map(args, fn({label, arg}) -> {label, convert_to_elixir_module_body_ast(env, arg)} end)
+    {:%{}, meta, args_ast}
   end
   defp convert_to_elixir_module_body_ast(_env, {:const, _meta, value}), do: value
   defp convert_to_elixir_module_body_ast(_env, module_expr) do

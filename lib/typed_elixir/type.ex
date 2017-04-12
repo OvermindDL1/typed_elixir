@@ -99,10 +99,32 @@ defmodule TypedElixir.Type do
       {env, type}
     end
 
-    def refine(env, app, overrides, pos_index \\ 0)
-    def refine(env, %App{}=app, [], _pos_index), do: {env, app}
+    def get_type(env, %App{type: type}), do: get_type(env, type)
+    def get_type(env, type) do
+      {env, resolved} = TypedElixir.Type.get_resolved_type(env, type)
+      case resolved do
+        %App{} = app -> get_type(env, app)
+        t -> {env, t}
+      end
+    end
+
+    def refine(env, app, overrides), do: refine(env, app, overrides, 0)
+    # defp refine(env, %App{}=app, [], _pos_index), do: {env, app}
+    defp refine(env, %App{type: type, args_types: args_types} = app, [], _pos_index) do
+      Enum.any?(args_types, fn{_, type} ->
+        {_env, resolved} = TypedElixir.Type.get_type_or_ptr_type(env, type)
+        case resolved do
+          %TypedElixir.Type.Ptr.Unbound{} -> true
+          _ -> false
+        end
+      end)
+      |> case do
+        false -> {env, type} # Fully applied, return the final type
+        true -> {env, app} # We are still being applied...
+      end
+    end
     # By name
-    def refine(env, %App{}=app, [{name, new_type} | overrides], pos_index) when is_atom(name) do
+    defp refine(env, %App{}=app, [{name, new_type} | overrides], pos_index) when is_atom(name) do
       args_types = app.args_types
       type = app.type
       case List.keyfind(args_types, name, 0, nil) do
@@ -120,7 +142,7 @@ defmodule TypedElixir.Type do
       end
     end
     # By position
-    def refine(env, %App{}=app, [new_type | overrides], pos_index) when is_map(new_type) do # is_struct
+    defp refine(env, %App{}=app, [new_type | overrides], pos_index) when is_map(new_type) do # is_struct
       args_types = app.args_types
       type = app.type
       case Enum.at(args_types, pos_index, nil) do
@@ -179,6 +201,33 @@ defmodule TypedElixir.Type do
 
 
 
+  defmodule Record do
+    # :labels should be [{atom_Label, type}]
+    defstruct [:labels, :meta]
+    def new(env, labels, meta \\ []) when is_list(labels) and is_list(meta) do
+      labels_no_dups = Enum.uniq_by(labels, &elem(&1, 0))
+      if(length(labels_no_dups) != length(labels), do: throw {:RECORD_DUPLICATE_LABEL, labels -- labels_no_dups})
+      meta = Enum.into(meta, %{})
+      type = %Record{labels: labels, meta: meta}
+      {env, type}
+    end
+
+    def extend(env, record, new_labels)
+    def extend(env, %Record{} = record, []), do: {env, record}
+    def extend(env, %Record{labels: labels, meta: meta}, [{nl, _nt} = new_label | rest]) do
+      case Enum.find(labels, nil, &(elem(&1, 0)==nl)) do
+        nil ->
+          new_labels = labels ++ [new_label] # Keep the ordering...
+          type = %Record{labels: new_labels, meta: meta}
+          extend(env, type, rest)
+        label -> throw {:RECORD_EXTENDED_DUPLICATE_LABEL, label}
+      end
+    end
+  end
+
+
+
+
   # Helpers
 
   def get_resolved_type(env, type)
@@ -225,6 +274,15 @@ defmodule TypedElixir.Type do
     type = %{type | types: types}
     callback.(env, type)
   end
+  def map_types(env, %Record{labels: labels} = type, _opts, callback) do
+    {env, typed_labels} =
+      HMEnv.map_env(env, labels, fn (env, {label, type}) ->
+        {env, t} = callback.(env, type)
+        {env, {label, t}}
+      end)
+    type = %{type | labels: typed_labels}
+    callback.(env, type)
+  end
   def map_types(env, %Ptr{ptr: ptr} = type, opts, callback) do
     ptr =
       if :ptr_recurse in opts do
@@ -258,7 +316,7 @@ defmodule TypedElixir.Type do
     HMEnv.map_env(env, args_types, &generify_unbound/2)
   end
   def generify_unbound(env, %Const{} = type), do: {env, type}
-  def generify_unbound(env, type) do
+  def generify_unbound(_env, type) do
     throw {:TODO, :generify_unbound_unhandled, type}
   end
 
@@ -308,6 +366,19 @@ defmodule TypedElixir.Type do
     resolve_types(env, fromType, intoType)
     # {env, intoType} = get_type_or_ptr_type(env, intoType)
     # resolve_types_nolinks(env, fromType, intoType)
+  end
+  defp resolve_types_nolinks(env, _from, %Record{labels: fromLabels} = type, %Record{labels: toLabels}) do
+    fromLabels = Enum.sort(fromLabels)
+    toLabels = Enum.sort(toLabels)
+    if length(fromLabels) != length(toLabels), do: throw {:NO_TYPE_RESOLUTION, :RECORD_LENGTH_DOES_NOT_MATCH}
+    {env, _labels} =
+      HMEnv.zipmap_env(env, fromLabels, toLabels, fn
+        (env, {label, ltype}, {label, ltype}) -> {env, ltype}
+        (env, {label, fromType}, {label, toType}) -> resolve_types(env, fromType, toType)
+        # (_env, {label, _}, _) -> throw {:NO_TYPE_RESOLUTION, :RECORD_FROM, label}
+        # (_env, _, {label, _}) -> throw {:NO_TYPE_RESOLUTION, :RECORD_TO, label}
+      end)
+    {env, type}
   end
   # Keep TypePtr handling last
   # def resolve_types_nolinks(env, from, %Ptr{ptr: fromPtr}=from, %Ptr{ptr: intoPtr}=into) do
