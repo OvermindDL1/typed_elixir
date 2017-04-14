@@ -8,26 +8,6 @@ defmodule MLElixirTest do
   import MLElixir
 
 
-  # defmodule NativeTest do
-  #
-  #   def identity(x), do: x
-  #
-  #   def __ml_open__ do
-  #     %{
-  #       funs: %{
-  #         identity: fn
-  #           (env, meta, [{_,argMeta,_}]=args) ->
-  #             ast = {:"$$CALL$$", [type: argMeta[:type]] ++ meta, [{MLElixirTest.NativeTest, :identity} | args]}
-  #             {env, ast}
-  #           end,
-  #         },
-  #       types: %{
-  #       },
-  #     }
-  #   end
-  #
-  # end
-
   defmlmodule MLModuleTest_Specific do
     type t = MLModuleTest.type_definition
     type Specific = MLModuleTest_Generalized.(t: float)

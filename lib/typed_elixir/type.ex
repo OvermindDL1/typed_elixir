@@ -167,7 +167,8 @@ defmodule TypedElixir.Type do
   defmodule Func do
     # call is {modules, func_name, args_count} when is_list_of_atoms(modules) and is_atom(func_name) and is_integer(args_count)
     defstruct [:args_types, :return_type, :is_indirect, :call, :meta]
-    def new(env, args_types, return_type, is_indirect, {modules, func_name, args_count} = call, meta \\ [])
+    def new(env, args_types, return_type, is_indirect, call, meta \\ [])
+    def new(env, args_types, return_type, is_indirect, {modules, func_name, args_count} = call, meta)
       when is_list(args_types) and is_map(return_type) and is_boolean(is_indirect) and is_list(modules)
       and is_atom(func_name) and is_integer(args_count) and is_list(meta) do
       meta = Enum.into(meta, %{})
