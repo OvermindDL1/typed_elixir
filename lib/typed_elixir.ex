@@ -325,7 +325,7 @@ throw {:TODO_RESOLVE_FUN_RETURN_TYPE_UNKNOWN, type, :<, return_type, typed_retur
         {env, args} = type_check_fun_when(env, opts, args, when_ast)
         {env, args_types} = HMEnv.map_env(env, args, &get_type_of/2)
         {env, return_type} = Type.Ptr.Unbound.new_ptr(env)
-        {env, type} = Type.Func.new(env, args_types, return_type, false)
+        {env, type} = Type.Func.new(env, args_types, return_type, false, nil)
         # Put the head type into the scope for calling it recursively
         env = HMEnv.push_type(env, {:function, name, arg_count}, type)
         # Make this function available at the global module scope before pushing a new scope
@@ -433,7 +433,7 @@ throw {:TODO_RESOLVE_FUN_RETURN_TYPE_UNKNOWN, type, :<, return_type, typed_retur
     argCount = length(args_ast)
     {env, args_types} = HMEnv.map_env(env, args_ast, &parse_type_from(&1, opts, &2))
     {env, returnType} = parse_type_from(env, opts, return_ast)
-    {env, type} = Type.Func.new(env, args_types, returnType, false)
+    {env, type} = Type.Func.new(env, args_types, returnType, false, nil)
     env = HMEnv.push_type(env, {:function, name, argCount}, type)
     {env, type}
   end

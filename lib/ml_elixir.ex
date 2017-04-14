@@ -3,6 +3,8 @@ defmodule MLElixir do
   """
 
 
+  # TODO:  BIG_TODO!  Refactor the error reporting from random throw's to actual exceptions that hold the ast meta information and such...
+
 
   alias TypedElixir.HMEnv
   alias TypedElixir.Type
@@ -75,10 +77,25 @@ defmodule MLElixir do
 
 
 
-  defmacro defmlmodule(name, opts) do #when is_atom(name) and is_list(opts) do
+  defmacro defmlmodule(name, opts) do
     block_module = opts[:do]
     opts = Keyword.delete(opts, :do)
     opts = Keyword.put(opts, :environment, __CALLER__)
+opts = Keyword.put(opts, :full_stack, true)
+    case opts[:full_stack] do
+      true -> defmlmodule_impl(name, block_module, opts)
+      _ ->
+        try do
+          defmlmodule_impl(name, block_module, opts)
+        catch
+          x -> quote(do: throw unquote(x))
+        end
+    end
+  end
+
+
+
+  defp defmlmodule_impl(name, block_module, opts) do #when is_atom(name) and is_list(opts) do
     # opts = [debug: true] ++ opts
 
     env = %HMEnv{user: Enum.into(opts, %{})} |> HMEnv.push_scope(:top)
@@ -129,7 +146,9 @@ defmodule MLElixir do
           # types = Map.put(types, name, type)
           # {env, types}
           {env, types}
-        (unknown, {_env, types}) -> Process.sleep(500); throw {:TODO, :unhandled_module_type_builder, unknown, types}
+        ({:external, _meta, _args}, {env, types}) ->
+          {env, types}
+        (unknown, {_env, types}) -> throw {:TODO, :unhandled_module_type_builder, unknown, types}
       end)
     Type.Module.new(env, types)
   end
@@ -215,6 +234,13 @@ defmodule MLElixir do
   # Also allow 'let' as well
   defp parse_module_expression(env, {:let, def_meta, def_args}) do
     parse_module_def(env, def_meta, def_args)
+  end
+  # 'external' makes a function that calls out to untyped erlang/elixir/whatever
+  defp parse_module_expression(env, {:external, ext_meta, ext_args}) do
+    parse_module_external(env, ext_meta, ext_args)
+  end
+  defp parse_module_expression(env, {:defexternal, ext_meta, ext_args}) do
+    parse_module_external(env, ext_meta, ext_args)
   end
   defp parse_module_expression(_env, expr) do
     throw {:TODO, :unhandled_module_expression, expr}
@@ -328,30 +354,49 @@ defmodule MLElixir do
   end
   # 2-tuple Record type, fix to normal call because Elixir AST design...
   defp parse_type_expression(env, {arg0, arg1}), do: parse_type_expression(env, {:{}, [], [arg0, arg1]})
-  defp parse_type_expression(env, {:%{}, _meta, [{:_, update_from_ast} | args]}) do
-    {env, update_from_unresolved} = parse_type_expression(env, update_from_ast)
-    {env, update_from_resolved} = Type.get_type_or_ptr_type(env, update_from_unresolved)
-    {env, update_from} = Type.App.get_type(env, update_from_resolved)
-    case update_from do
-      %Type.Record{} = record ->
-        {env, typed_labels} =
-          HMEnv.map_env(env, args, fn
-            (env, {label, type_ast}) when is_atom(label) ->
-              {env, type} = parse_type_expression(env, type_ast)
-              {env, {label, type}}
-          end)
-        {env, type} = Type.Record.extend(env, record, typed_labels)
-        {env, type}
-      unhandled_type -> throw {:invalid_record_type, :not_record_type, unhandled_type, update_from_ast}
-    end
-  end
+  # defp parse_type_expression(env, {:%{}, _meta, [{:+, update_from_ast} | args]}) do
+  #   {env, update_from_unresolved} = parse_type_expression(env, update_from_ast)
+  #   {env, update_from_resolved} = Type.get_type_or_ptr_type(env, update_from_unresolved)
+  #   {env, update_from} = Type.App.get_type(env, update_from_resolved)
+  #   case update_from do
+  #     %Type.Record{} = record ->
+  #       {env, typed_labels} =
+  #         HMEnv.map_env(env, args, fn
+  #           (env, {label, type_ast}) when is_atom(label) ->
+  #             {env, type} = parse_type_expression(env, type_ast)
+  #             {env, {label, type}}
+  #         end)
+  #       {env, type} = Type.Record.extend(env, record, typed_labels)
+  #       {env, type}
+  #     # %Type.Ptr.Unbound{} ->
+  #     #   {env, type} = Type.Record.Unresolved.new()
+  #     unhandled_type -> throw {:invalid_record_type, :not_record_type, unhandled_type, update_from_ast}
+  #   end
+  # end
   defp parse_type_expression(env, {:%{}, _meta, args}) do
     {env, typed_labels} =
       HMEnv.map_env(env, args, fn
+        (env, {:+, type_ast}) ->
+          {env, type_from_unresolved} = parse_type_expression(env, type_ast)
+          {env, type_from_resolved} = Type.get_type_or_ptr_type(env, type_from_unresolved)
+          {env, type_from} = Type.App.get_type(env, type_from_resolved)
+          case type_from do
+            %Type.Record{labels: labels, meta: _meta} -> {env, labels}
+            unhandled_type -> throw {:invalid_record_type, :not_record_type, unhandled_type, type_ast}
+          end
+        (env, {:-, {label, _labelMeta, nil}}) -> {env, {:-, label}}
         (env, {label, type_ast}) when is_atom(label) ->
           {env, type} = parse_type_expression(env, type_ast)
           {env, {label, type}}
       end)
+    typed_labels =
+      typed_labels
+      |> List.flatten()
+      |> Enum.reduce([], fn
+        ({:-, label}, a) -> Keyword.delete(a, label)
+        (e, a) -> [e | a]
+      end)
+      |> :lists.reverse()
     {env, type} = Type.Record.new(env, typed_labels)
     {env, type}
   end
@@ -511,44 +556,59 @@ defmodule MLElixir do
 
 
 
+  defp parse_module_external(env, ext_meta, ext_args)
+  # Externals *must* be typed
+  defp parse_module_external(env, ext_meta, [{:|, _type_meta, [{name, _name_meta, args_ast}, {:=, _body_meta, [return_ast, body_ast]}]}]) when is_atom(name) do
+    parse_module_external(env, ext_meta, name, args_ast, return_ast, body_ast)
+  end
+  defp parse_module_external(env, ext_meta, [{:|, _type_meta, [{name, _name_meta, args_ast}, return_ast]}, [do: body_ast]]) when is_atom(name) do
+    parse_module_external(env, ext_meta, name, args_ast, return_ast, body_ast)
+  end
+  defp parse_module_external(_env, _ext_meta, ext_args) do
+    throw {:TODO, :unhandled_external_expression, ext_args}
+  end
+
+
+
+  defp parse_module_external(env, meta, name, args_ast, return_ast, body_ast)
+  defp parse_module_external(env, meta, name, args_ast, return_ast, body_ast) when is_atom(name) do
+    env = HMEnv.push_scope(env, :def, name)
+    {env, return_type} = parse_type_expression(env, return_ast)
+    {env, args_types} = HMEnv.map_env(env, args_ast, &parse_type_expression/2)
+    args_count = length(args_types)
+    func_key = Key.func(name, args_count)
+    {env, {modules, func_name}} = parse_module_external_body(env, body_ast)
+    {env, _scope} = HMEnv.pop_scope(env, :def)
+    {env, args_types} = Type.generify_unbound(env, args_types)
+    {env, func_type} = Type.Func.new(env, args_types, return_type, false, {modules, func_name, args_count})
+    env = HMEnv.push_type(env, func_key, func_type)
+    call_type = {:external_call, [type: func_type], [{modules, func_name, args_count}]}
+    env = add_call(env, name, call_type, func_type)
+    ast = {:external, [type: func_type] ++ meta, [name, {modules, func_name, args_count}]}
+    {env, ast}
+  end
+  defp parse_module_external(_env, _meta, name, args_ast, return_ast, body_ast) do
+    throw {:TODO, :unhandled_external_expression_impl, name, args_ast, return_ast, body_ast}
+  end
+
+
+
+  defp parse_module_external_body(env, body_ast)
+  defp parse_module_external_body(env, {{:., _dot_meta, [{:__aliases__, _aliases_meta, modules}, func_name]}, _body_meta, []}) when is_list(modules) and is_atom(func_name) do
+    {env, {modules, func_name}}
+  end
+  defp parse_module_external_body(_env, body_ast) do
+    throw {:TODO, :unhandled_external_body, body_ast}
+  end
+
+
+
+
   defp parse_module_def(env, meta, definition)
-  # With type and body 0-arg
-  # defp parse_module_def(env, meta, [{:|, _split_meta, [{name, _name_meta, name_context = nil}, {:=, _equals_meta, [type_expr, body_expr]}]}]) when is_atom(name) and is_atom(name_context) do
-  #   env = HMEnv.push_scope(env, :def, name)
-  #   {env, type} = parse_type_expression(env, type_expr)
-  #   # key = Key.typename(name)
-  #   # env = HMEnv.push_type(env, key, type)
-  #   {env, body} = parse_ml_expression(env, body_expr)
-  #   {_, body_meta, _} = body
-  #   body_type = body_meta[:type]
-  #   # TODO:  Make sure the body_type fulfills the type
-  #   Type.resolve_types!(env, type, body_type)
-  #   {env, _scope} = HMEnv.pop_scope(env, :def)
-  #   # key = Key.func(name)
-  #   # env = HMEnv.push_type(env, key, type)
-  #   ast = {:def, [type: type] ++ meta, [name, [], body]}
-  #   {env, ast}
-  # end
   # With type and body
   defp parse_module_def(env, meta, [{:|, _split_meta, [{name, _name_meta, args_ast}, {:=, _equals_meta, [type_expr, body_expr]}]}]) when is_atom(name) do
     {env, return_type} = parse_type_expression(env, type_expr)
     parse_module_def_impl(env, meta, name, args_ast, return_type, body_expr)
-    # env = HMEnv.push_scope(env, :def, name)
-    # {env, args} = parse_module_def_args(env, args_ast)
-    # args_types = Enum.map(args, fn {_, meta, _} -> meta[:type] end)
-    # {env, return_type} = parse_type_expression(env, type_expr)
-    # {env, inner_type} = Type.Func.new(env, args_types, return_type, false)
-    # func_key = Key.func(name, length(args))
-    # env = HMEnv.push_type(env, func_key, inner_type)
-    # {env, body} = parse_ml_expression(env, body_expr)
-    # {_, body_meta, _} = body
-    # body_type = body_meta[:type]
-    # {env, return_type} = Type.resolve_types!(env, body_type, return_type)
-    # {env, _scope} = HMEnv.pop_scope(env, :def)
-    # {env, func_type} = Type.Func.new(env, args_types, return_type, false)
-    # env = HMEnv.push_type(env, func_key, func_type)
-    # ast = {:def, [type: func_type] ++ meta, [name, args, body]}
-    # {env, ast}
   end
   defp parse_module_def(env, meta, [{:|, _split_meta, [{name, _name_meta, args_ast}, type_expr]}, [do: body_expr]]) when is_atom(name) do
     {env, return_type} = parse_type_expression(env, type_expr)
@@ -557,38 +617,10 @@ defmodule MLElixir do
   defp parse_module_def(_env, _meta, [{:|, _, _}|_]=definition) do
     throw {:TODO, :unhandled_typed_def_expression, definition}
   end
-  # # No type with body 0-arg
-  # defp parse_module_def(env, meta, [{:=, _equals_meta, [{name, _name_meta, name_context = nil}, body_expr]}]) when is_atom(name) and is_atom(name_context) do
-  #   {env, return_type} = Type.Ptr.Unbound.new_ptr(env)
-  #   parse_module_def_impl(env, meta, name, args_ast, return_type, body_expr)
-  #   # env = HMEnv.push_scope(env, :def, name)
-  #   # {env, body} = parse_ml_expression(env, body_expr)
-  #   # {_, body_meta, _} = body
-  #   # type = body_meta[:type]
-  #   # {env, _scope} = HMEnv.pop_scope(env, :def)
-  #   # ast = {:def, [type: type] ++ meta, [name, [], body]}
-  #   # {env, ast}
-  # end
   # No type with body
   defp parse_module_def(env, meta, [{:=, _equals_meta, [{name, _name_meta, args_ast}, body_expr]}]) when is_atom(name) do
     {env, return_type} = Type.Ptr.Unbound.new_ptr(env)
     parse_module_def_impl(env, meta, name, args_ast, return_type, body_expr)
-    # env = HMEnv.push_scope(env, :def, name)
-    # {env, args} = parse_module_def_args(env, args_ast)
-    # args_types = Enum.map(args, fn {_, meta, _} -> meta[:type] end)
-    # {env, return_type} = Type.Ptr.Unbound.new_ptr(env)
-    # {env, inner_type} = Type.Func.new(env, args_types, return_type, false)
-    # func_key = Key.func(name, length(args))
-    # env = HMEnv.push_type(env, func_key, inner_type)
-    # {env, body} = parse_ml_expression(env, body_expr)
-    # {_, body_meta, _} = body
-    # body_type = body_meta[:type]
-    # {env, return_type} = Type.resolve_types!(env, body_type, return_type)
-    # {env, _scope} = HMEnv.pop_scope(env, :def)
-    # {env, func_type} = Type.Func.new(env, args_types, return_type, false)
-    # env = HMEnv.push_type(env, func_key, func_type)
-    # ast = {:def, [type: func_type] ++ meta, [name, args, body]}
-    # {env, ast}
   end
   # No type with block body
   defp parse_module_def(env, meta, [{name, _name_meta, args_ast}, [do: body_expr]]) when is_atom(name) do
@@ -606,7 +638,7 @@ defmodule MLElixir do
     env = HMEnv.push_scope(env, :def, name)
     {env, args} = parse_module_def_args(env, args_ast)
     args_types = Enum.map(args, fn {_, meta, _} -> meta[:type] end)
-    {env, inner_type} = Type.Func.new(env, args_types, return_type, false)
+    {env, inner_type} = Type.Func.new(env, args_types, return_type, false, nil)
     func_key = Key.func(name, length(args))
     env = HMEnv.push_type(env, func_key, inner_type)
     {env, body} = parse_ml_expression(env, body_expr)
@@ -615,7 +647,7 @@ defmodule MLElixir do
     {env, return_type} = Type.resolve_types!(env, body_type, return_type)
     {env, _scope} = HMEnv.pop_scope(env, :def)
     {env, args_types} = Type.generify_unbound(env, args_types)
-    {env, func_type} = Type.Func.new(env, args_types, return_type, false)
+    {env, func_type} = Type.Func.new(env, args_types, return_type, false, nil)
     env = HMEnv.push_type(env, func_key, func_type)
     ast = {:def, [type: func_type] ++ meta, [name, args, body]}
     {env, ast}
@@ -717,7 +749,7 @@ defmodule MLElixir do
   defp parse_ml_expression(env, {name, meta, args}) when is_atom(name) and is_list(args) do
     key = Key.call(name)
     case HMEnv.get_type(env, key) do
-      nil -> throw {:CALL_NOT_FOUND, name}
+      nil -> throw {:CALL_NOT_FOUND, name, env.types}
       {{:const, const_meta, value}, type} when args === [] ->
         ast = {:const, [type: type] ++ const_meta ++ meta, value}
         {env, ast}
@@ -736,6 +768,19 @@ defmodule MLElixir do
                 {env, ast}
             end
           unhandled -> throw {:TODO, :unhandled_call_enumeration_type, unhandled}
+        end
+      {{:external_call, ext_meta, [{modules, func_name, arg_count}]}, type} ->
+        case ext_meta[:type] do
+          %Type.Func{args_types: args_types} ->
+            {env, args_ast} = HMEnv.zipmap_env(env, args_types, args, fn
+              (env, apply_type, arg) ->
+                {env, {_, arg_meta, _} = arg_ast} = parse_ml_expression(env, arg)
+                arg_type = arg_meta[:type]
+                {env, _resolved_type} = Type.resolve_types!(env, arg_type, apply_type)
+                {env, arg_ast}
+            end)
+            ast = {:call, [type: type] ++ ext_meta, [{modules, func_name, arg_count}, args_ast]}
+            {env, ast}
         end
       unhandled -> throw {:TODO, :unhandled_call_type, args, unhandled}
     end
@@ -792,6 +837,17 @@ defmodule MLElixir do
 
   defp convert_to_elixir_module_body_ast(env, module_expr)
   defp convert_to_elixir_module_body_ast(_env, {:type, _, _}), do: nil # Ignore type definitions for per-expression code ast
+  defp convert_to_elixir_module_body_ast(env, {:external, external_meta, [name, {modules, func_name, arg_count}]}) do
+    type = external_meta[:type]
+    args_types = type.args_types
+    ^arg_count = length(args_types)
+    # Go ahead and make a wrapper function for calling from non-typed code
+    bindings =
+      args_types
+      |> Enum.with_index()
+      |> Enum.map(&{:binding, [type: elem(&1,0)], [String.to_atom("#{func_name}__var__#{elem(&1,1)}")]})
+    convert_to_elixir_module_body_ast(env, {:def, external_meta, [name, bindings, {:call, external_meta, [{modules, func_name, arg_count}, bindings]}]})
+  end
   defp convert_to_elixir_module_body_ast(env, {:def, def_meta, [name, args, body_expr]}) when is_atom(name) and is_list(args) and not is_list(body_expr) do
     args_ast = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
     name_ast = {name, [], args_ast}
@@ -803,11 +859,11 @@ defmodule MLElixir do
             nil -> throw {:TODO, :AST_WITHOUT_TYPE, binding_ast}
             type ->
               case Type.get_type_or_ptr_type(env, type) do # TODO:  Type the guards?  Probably no point...
-                {env, %Type.Ptr.Generic{}} -> []
-                {env, %Type.Const{const: :integer}} -> {:is_integer, m, [bound_ast]}
-                {env, %Type.Const{const: :float}} -> {:is_float, m, [bound_ast]}
-                {env, %Type.Const{const: :atom}} -> {:is_atom, m, [bound_ast]}
-                {env, unhandled} -> throw {:TODO, :unhandled_arg_guard_type, unhandled, binding_ast}
+                {_env, %Type.Ptr.Generic{}} -> []
+                {_env, %Type.Const{const: :integer}} -> {:is_integer, m, [bound_ast]}
+                {_env, %Type.Const{const: :float}} -> {:is_float, m, [bound_ast]}
+                {_env, %Type.Const{const: :atom}} -> {:is_atom, m, [bound_ast]}
+                {_env, unhandled} -> throw {:TODO, :unhandled_arg_guard_type, unhandled, binding_ast}
               end
           end
         unhandled -> throw {:TODO, :unhandled_arg_guard, unhandled}
@@ -823,6 +879,11 @@ defmodule MLElixir do
     body_ast = convert_to_elixir_module_body_ast(env, body_expr)
     ast = {:def, def_meta, [when_ast, [do: body_ast]]}
     ast
+  end
+  defp convert_to_elixir_module_body_ast(env, {:call, external_meta, [{modules, func_name, arg_count}, args]}) do
+    ^arg_count = length(args)
+    args_ast = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
+    {{:., [], [{:__aliases__, [alias: false], modules}, func_name]}, external_meta, args_ast}
   end
   defp convert_to_elixir_module_body_ast(_env, {:binding, meta, [name]}) when is_atom(name) do
     {name, meta, nil}

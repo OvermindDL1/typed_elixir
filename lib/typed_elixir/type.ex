@@ -165,10 +165,19 @@ defmodule TypedElixir.Type do
 
 
   defmodule Func do
-    defstruct [:args_types, :return_type, :is_indirect, :meta]
-    def new(env, args_types, return_type, is_indirect, meta \\ []) when is_list(args_types) and is_map(return_type) and is_boolean(is_indirect) and is_list(meta) do
+    # call is {modules, func_name, args_count} when is_list_of_atoms(modules) and is_atom(func_name) and is_integer(args_count)
+    defstruct [:args_types, :return_type, :is_indirect, :call, :meta]
+    def new(env, args_types, return_type, is_indirect, {modules, func_name, args_count} = call, meta \\ [])
+      when is_list(args_types) and is_map(return_type) and is_boolean(is_indirect) and is_list(modules)
+      and is_atom(func_name) and is_integer(args_count) and is_list(meta) do
       meta = Enum.into(meta, %{})
-      type = %Func{args_types: args_types, return_type: return_type, is_indirect: is_indirect, meta: meta}
+      type = %Func{args_types: args_types, return_type: return_type, is_indirect: is_indirect, call: call, meta: meta}
+      {env, type}
+    end
+    def new(env, args_types, return_type, is_indirect, nil = call, meta)
+      when is_list(args_types) and is_map(return_type) and is_boolean(is_indirect) and is_list(meta) do
+      meta = Enum.into(meta, %{})
+      type = %Func{args_types: args_types, return_type: return_type, is_indirect: is_indirect, call: call, meta: meta}
       {env, type}
     end
   end
@@ -206,10 +215,36 @@ defmodule TypedElixir.Type do
     defstruct [:labels, :meta]
     def new(env, labels, meta \\ []) when is_list(labels) and is_list(meta) do
       labels_no_dups = Enum.uniq_by(labels, &elem(&1, 0))
-      if(length(labels_no_dups) != length(labels), do: throw {:RECORD_DUPLICATE_LABEL, labels -- labels_no_dups})
+      if(length(labels_no_dups) != length(labels), do: throw {:RECORD_DUPLICATE_LABELS, Keyword.keys(labels -- labels_no_dups)})
       meta = Enum.into(meta, %{})
       type = %Record{labels: labels, meta: meta}
       {env, type}
+    end
+
+    defmodule Unresolved do
+      defstruct [:labels, :meta]
+      def new(env, labels, meta \\ []) when is_list(labels) and is_list(meta) do
+        meta = Enum.into(meta, %{})
+        type = %Record{labels: labels, meta: meta}
+        {env, type}
+      end
+
+      def resolve(env, %Unresolved{labels: labels, meta: meta}) do
+        {resolved_labels, resolved_meta} =
+          labels
+          |> Enum.reduce({%{}, %{}}, fn
+            ({:+, type}, {l, m}) ->
+              case TypedElixir.Type.get_resolved_type(env, type) do
+                {_env, %Record{labels: addLabels, meta: addMeta}} ->
+                  newLabels = Map.merge(l, addLabels, &throw({:RECORD_DUPLICATE_LABEL_RESOLVE, elem(&1, 0), elem(&1, 1)}))
+                  newMeta = Map.merge(m, addMeta)
+                  {newLabels, newMeta}
+              end
+          end)
+        resolved_labels = Enum.into(resolved_labels, [])
+        resolved_meta = Map.merge(meta, resolved_meta) |> Enum.into([])
+        Record.new(env, resolved_labels, resolved_meta)
+      end
     end
 
     def extend(env, record, new_labels)
@@ -370,11 +405,12 @@ defmodule TypedElixir.Type do
   defp resolve_types_nolinks(env, _from, %Record{labels: fromLabels} = type, %Record{labels: toLabels}) do
     fromLabels = Enum.sort(fromLabels)
     toLabels = Enum.sort(toLabels)
-    if length(fromLabels) != length(toLabels), do: throw {:NO_TYPE_RESOLUTION, :RECORD_LENGTH_DOES_NOT_MATCH}
+    if length(fromLabels) != length(toLabels), do: throw {:NO_TYPE_RESOLUTION, :RECORD_LENGTH_DOES_NOT_MATCH, Keyword.keys(fromLabels), Keyword.keys(toLabels)}
     {env, _labels} =
       HMEnv.zipmap_env(env, fromLabels, toLabels, fn
         (env, {label, ltype}, {label, ltype}) -> {env, ltype}
         (env, {label, fromType}, {label, toType}) -> resolve_types(env, fromType, toType)
+        (env, {fromLabel, _fromType}, {toLabel, _toType}) -> throw {:NO_TYPE_RESOLUTION, :RECORD_LABEL_MISMATCH, if(fromLabel<toLabel, do: fromLabel, else: toLabel), :EXPECTED, if(fromLabel<toLabel, do: toLabel, else: fromLabel)}
         # (_env, {label, _}, _) -> throw {:NO_TYPE_RESOLUTION, :RECORD_FROM, label}
         # (_env, _, {label, _}) -> throw {:NO_TYPE_RESOLUTION, :RECORD_TO, label}
       end)

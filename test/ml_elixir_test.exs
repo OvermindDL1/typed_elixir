@@ -76,11 +76,12 @@ defmodule MLElixirTest do
       y: float,
     }
     type record2(t) = %{t: t}
-    type record_ex_0 = %{_: record0, z: integer}
-    type record_ex_1 = %{_: record1, z: integer}
-    type record_ex_2(t) = %{_: record2(t), z: integer}
-    type record_ex_2_float = %{_: record2(float), z: integer}
-    # type record_ex_sub(t) = %{_: t, z: integer} # Need to support unbound's perhaps?
+    type record_ex_0 = %{+: record0, z: integer}
+    type record_ex_1 = %{+: record1, +: record0, z: integer}
+    type record_ex_2(t) = %{+: record2(t), z: integer}
+    type record_ex_2_float = %{+: record2(float), z: integer}
+    # type record_ex_sub(t) = %{+: t, z: integer} # Need to support unbound's perhaps? # Unsure if I want to support this...
+    type record_rem_0 = %{+: record1, -: x}
 
     def testering_record0 | record0 = %{}
     def testering_record1 | record1 = %{x: 42, y: 6.28}
@@ -91,7 +92,14 @@ defmodule MLElixirTest do
     def testering_record6 | record_ex_2(integer) = %{t: 42, z: 42}
     def testering_record7(t | !t) | record_ex_2(!t) = %{t: t, z: 42}
     def testering_record8 | record_ex_2_float = %{t: 6.28, z: 42}
-    # def testering_record9 | record_ex_sub(record2(float)) = %{t: 6.28, z: 42}
+    # def testering_record9 | record_ex_sub(record2(float)) = %{t: 6.28, z: 42} # Unsure if I want to support this...
+    def testering_record10 | record_rem_0 = %{y: 6.28}
+
+    # FFI
+    external addi(integer, integer) | integer = Kernel.+
+    def testering_ffi_addi_0 = addi(1, 2)
+    def testering_ffi_addi_1(i) = addi(1, i)
+    def testering_ffi_addi_2(a, b) = addi(a, b)
   end
 
   # defmlmodule MLModuleTest_Specific_Module | MLModuleTest.(t: int) do
@@ -144,6 +152,13 @@ defmodule MLElixirTest do
     assert MLModuleTest_Specific.testering_record6() === %{t: 42, z: 42}
     assert MLModuleTest_Specific.testering_record7(42) === %{t: 42, z: 42}
     assert MLModuleTest_Specific.testering_record8() === %{t: 6.28, z: 42}
+    assert MLModuleTest_Specific.testering_record10() === %{y: 6.28}
+
+    # FFI
+    assert MLModuleTest_Specific.addi(1, 2) === 3 # Yep, the external is exposed directly as a function for non-typed code
+    assert MLModuleTest_Specific.testering_ffi_addi_0() === 3
+    assert MLModuleTest_Specific.testering_ffi_addi_1(3) === 4
+    assert MLModuleTest_Specific.testering_ffi_addi_2(1, 2) === 3
   end
 
   # test "literals" do
