@@ -141,6 +141,46 @@ defmodule MLElixirTest do
     assert MLModuleTest_Specific.testering_ffi_addi_2(1, 2) === 3
   end
 
+
+
+  test "MLElixir Javascript output" do
+    js =
+      defmlmodule :testing_js, output_format: :js do
+        type t = MLModuleTest.type_definition
+        type Specific = MLModuleTest_Generalized.(t: float)
+        type st = Specific.t
+        type a(t) = t
+        type b(c) = c
+        type ra = a(integer)
+        type rb = b(integer)
+
+        type testering_enum
+        | none
+        | one
+        | integer integer
+        | two
+        | float float
+        | float2 float
+
+        def testering0 | t = 42
+        def testering1 | st = 6.28
+        def testering2 | ra = 42
+        def testering3 | rb = 42
+        def testering4 | a(integer) = 42
+        def testering5 | a(float) = 6.28
+        def testering6 | testering_enum = none() # Just testing that it works with 0-args too, elixir ast oddness reasons
+        def testering7 | testering_enum = one
+        def testering8 | testering_enum = two
+        def testering9 | testering_enum = integer # Curried!
+        def testering9x(x) | testering_enum = integer x # Not-Curried!
+        def testering10 | testering_enum = integer 42
+        def testering11(x) | testering_enum = integer x
+      end
+
+    IO.puts("Javascript:")
+    IO.puts(js)
+  end
+
   # test "literals" do
   #   assert 1 == defml 1
   #   assert 1.2 == defml 1.2

@@ -50,10 +50,21 @@ defmodule MLElixir do
 
 
 
-  defmacro defmlmodule(name, opts) do
-    block_module = opts[:do]
-    opts = Keyword.delete(opts, :do)
+  defmacro defmlmodule(name, opts, [do: block_module]) do
     opts = Keyword.put(opts, :environment, __CALLER__)
+opts = Keyword.put(opts, :full_stack, true)
+    case opts[:full_stack] do
+      true -> defmlmodule_impl(name, block_module, opts)
+      _ ->
+        try do
+          defmlmodule_impl(name, block_module, opts)
+        catch
+          x -> quote(do: throw unquote(x))
+        end
+    end
+  end
+  defmacro defmlmodule(name, [do: block_module]) do
+    opts = Keyword.put([], :environment, __CALLER__)
 opts = Keyword.put(opts, :full_stack, true)
     case opts[:full_stack] do
       true -> defmlmodule_impl(name, block_module, opts)
@@ -95,14 +106,16 @@ opts = Keyword.put(opts, :full_stack, true)
     {env, module_type} = Type.resolve_types!(env, inferred_module_type, module_type)
       |> debug(env, :module_type)
 
-    module_elixir_ast = convert_to_elixir_module_ast(env, name, name_meta, module_mlbody, module_type)
-      |> debug(env, :module_elixir_ast)
+    module_output =
+      case opts[:output_format] do
+        elixir when elixir in [nil, :elixir, Elixir] ->
+          convert_to_elixir_module_ast(env, name, name_meta, module_mlbody, module_type)
+        javascript when javascript in [:javascript, Javascript, :js, Js, JavaScript, JS] ->
+          convert_to_javascript_module_text(env, name, name_meta, module_mlbody, module_type)
+      end
+      |> debug(env, :module_output)
 
-    # {:defmodule, [context: __MODULE__, import: Kernel] ++ name_meta, [{:__aliases__, [alias: false], [name]}, [do: module_mlbody]]}
-    #   |> debug(env, :module_ast)
-
-    # throw "UNIMPLEMENTED: defmlmodule"
-    module_elixir_ast
+    module_output
   end
 
 
@@ -779,7 +792,7 @@ opts = Keyword.put(opts, :full_stack, true)
 
 
 
-  defp convert_to_elixir_module_ast(env, nam, name_metae, module_mlast, module_type)
+  defp convert_to_elixir_module_ast(env, name, name_metae, module_mlast, module_type)
   defp convert_to_elixir_module_ast(env, name, name_meta, module_mlasts, module_type) when is_atom(name) and is_list(module_mlasts) do
     name_ast = {:__aliases__, [alias: false], [name]}
     body_ast = Enum.map(module_mlasts, &convert_to_elixir_module_body_ast(env, &1)) |> Enum.filter(&(&1))
@@ -900,6 +913,56 @@ opts = Keyword.put(opts, :full_stack, true)
   end
   defp convert_to_elixir_module_body_ast(_env, {:const, _meta, value}), do: value
   defp convert_to_elixir_module_body_ast(_env, module_expr) do
+    throw {:TODO, :unhandled_module_body_expr, module_expr}
+  end
+
+
+
+  ### Javascript output
+
+  defp convert_to_javascript_module_text(env, name, name_metae, module_mlast, module_type)
+  defp convert_to_javascript_module_text(env, name, name_meta, module_mlasts, module_type) when is_atom(name) and is_list(module_mlasts) do
+    _ml_module_info_ast = generate_ml_module_info(env, module_type)
+    [
+      "Module Name:  ", to_string(name), ?\n,
+      "Version: 0.0.1", ?\n, ?\n,
+      Enum.map(module_mlasts, &convert_to_javascript_module_body_ast(env, &1)),
+    ]
+  end
+  defp convert_to_javascript_module_text(_env, name, name_meta, module_mlast, _module_type) do
+    throw [:TODO, :convert_to_javascript_module_ast, name, name_meta, module_mlast]
+  end
+
+
+  defp convert_to_javascript_module_body_ast(env, module_expr)
+  defp convert_to_javascript_module_body_ast(_env, {:type, _, _}), do: []
+  defp convert_to_javascript_module_body_ast(_env, {:const, _meta, value}) when is_atom(value), do: [?', to_string(value), ?']
+  defp convert_to_javascript_module_body_ast(_env, {:const, _meta, value}), do: to_string(value)
+  defp convert_to_javascript_module_body_ast(_env, {:binding, meta, [name]}) when is_atom(name) do
+    to_string(name)
+  end
+  defp convert_to_javascript_module_body_ast(_env, {:binding, meta, name}) when is_atom(name) do
+    to_string(name)
+  end
+  defp convert_to_javascript_module_body_ast(env, {:def, def_meta, [name, args, body_expr]}) when is_atom(name) and is_list(args) and not is_list(body_expr) do
+    [
+      "function ", to_string(name), "(", Enum.map(args, &convert_to_javascript_module_body_ast(env, &1)), ") {", ?\n,
+      ?\t, "return ", convert_to_javascript_module_body_ast(env, body_expr), ?;, ?\n,
+      ?}, ?\n,
+    ]
+  end
+  # single values enums shall be represented
+  defp convert_to_javascript_module_body_ast(env, {:enum_single, _meta, [_arg0, arg1]}) do
+    convert_to_javascript_module_body_ast(env, arg1)
+  end
+  # An unapplied enumeration head, make an anonymous function to hold it
+  defp convert_to_javascript_module_body_ast(_env, {:enumeration_head, meta, [name, apply_type]}) do
+    [ "function(__ANON_ARG__){return['",
+      to_string(name),
+      "', __ANON_ARG__];}",
+    ]
+  end
+  defp convert_to_javascript_module_body_ast(_env, module_expr) do
     throw {:TODO, :unhandled_module_body_expr, module_expr}
   end
 
