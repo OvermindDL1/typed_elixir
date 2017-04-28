@@ -175,6 +175,35 @@ defmodule MLElixirTest do
         def testering9x(x) | testering_enum = integer x # Not-Curried!
         def testering10 | testering_enum = integer 42
         def testering11(x) | testering_enum = integer x
+
+        type record0 = %{}
+        type record1 = %{
+          x: integer,
+          y: float,
+        }
+        type record2(t) = %{t: t}
+        type record_ex_0 = %{+: record0, z: integer}
+        type record_ex_1 = %{+: record1, +: record0, z: integer}
+        type record_ex_2(t) = %{+: record2(t), z: integer}
+        type record_ex_2_float = %{+: record2(float), z: integer}
+        type record_rem_0 = %{+: record1, -: x}
+
+        def testering_record0 | record0 = %{}
+        def testering_record1 | record1 = %{x: 42, y: 6.28}
+        def testering_record2(i) | record1 = %{x: i, y: 6.28}
+        def testering_record3(t | !t) | record2(!t) = %{t: t}
+        def testering_record4 | record_ex_0 = %{z: 42}
+        def testering_record5 | record_ex_1 = %{x: 42, y: 6.28, z: 42}
+        def testering_record6 | record_ex_2(integer) = %{t: 42, z: 42}
+        def testering_record7(t | !t) | record_ex_2(!t) = %{t: t, z: 42}
+        def testering_record8 | record_ex_2_float = %{t: 6.28, z: 42}
+        def testering_record10 | record_rem_0 = %{y: 6.28}
+
+        # FFI
+        external addi(integer, integer) | integer = Kernel.add
+        def testering_ffi_addi_0 = addi(1, 2)
+        def testering_ffi_addi_1(i) = addi(1, i)
+        def testering_ffi_addi_2(a, b) = addi(a, b)
       end
 
     IO.puts("Javascript:")

@@ -921,11 +921,11 @@ opts = Keyword.put(opts, :full_stack, true)
   ### Javascript output
 
   defp convert_to_javascript_module_text(env, name, name_metae, module_mlast, module_type)
-  defp convert_to_javascript_module_text(env, name, name_meta, module_mlasts, module_type) when is_atom(name) and is_list(module_mlasts) do
+  defp convert_to_javascript_module_text(env, name, _name_meta, module_mlasts, module_type) when is_atom(name) and is_list(module_mlasts) do
     _ml_module_info_ast = generate_ml_module_info(env, module_type)
     [
-      "Module Name:  ", to_string(name), ?\n,
-      "Version: 0.0.1", ?\n, ?\n,
+      "// Module Name:  ", to_string(name), ?\n,
+      "// Version: 0.0.1", ?\n, ?\n,
       Enum.map(module_mlasts, &convert_to_javascript_module_body_ast(env, &1)),
     ]
   end
@@ -934,19 +934,55 @@ opts = Keyword.put(opts, :full_stack, true)
   end
 
 
+  defp escape_js_string(atom) when is_atom(atom), do: escape_js_string(to_string(atom))
+  defp escape_js_string(string) when is_binary(string) do
+    string
+  end
+
+
   defp convert_to_javascript_module_body_ast(env, module_expr)
   defp convert_to_javascript_module_body_ast(_env, {:type, _, _}), do: []
   defp convert_to_javascript_module_body_ast(_env, {:const, _meta, value}) when is_atom(value), do: [?', to_string(value), ?']
   defp convert_to_javascript_module_body_ast(_env, {:const, _meta, value}), do: to_string(value)
-  defp convert_to_javascript_module_body_ast(_env, {:binding, meta, [name]}) when is_atom(name) do
+  defp convert_to_javascript_module_body_ast(_env, {:binding, _meta, [name]}) when is_atom(name) do
     to_string(name)
   end
-  defp convert_to_javascript_module_body_ast(_env, {:binding, meta, name}) when is_atom(name) do
+  defp convert_to_javascript_module_body_ast(_env, {:binding, _meta, name}) when is_atom(name) do
     to_string(name)
   end
-  defp convert_to_javascript_module_body_ast(env, {:def, def_meta, [name, args, body_expr]}) when is_atom(name) and is_list(args) and not is_list(body_expr) do
+  # Records (in javascript as objects)
+  defp convert_to_javascript_module_body_ast(env, {:record, _meta, args}) do
     [
-      "function ", to_string(name), "(", Enum.map(args, &convert_to_javascript_module_body_ast(env, &1)), ") {", ?\n,
+      ?{,
+      Enum.map(args, fn({label, arg}) -> [?", escape_js_string(label), "\": ", convert_to_javascript_module_body_ast(env, arg)] end) |> Enum.intersperse(", "),
+      ?},
+    ]
+  end
+  defp convert_to_javascript_module_body_ast(env, {:call, _external_meta, [{modules, func_name, _arg_count}, args]}) do
+    modules =
+      case modules do
+        [] -> ""
+        [required | rest] -> ["require(\"", escape_js_string(required), "\")." | Enum.map(rest, &[escape_js_string(&1), ?.])]
+      end
+    [
+      modules, to_string(func_name), ?(,
+      Enum.map(args, &convert_to_javascript_module_body_ast(env, &1)) |> Enum.intersperse(", "), ?)
+    ]
+  end
+  defp convert_to_javascript_module_body_ast(env, {:external, external_meta, [name, {modules, func_name, arg_count}]}) do
+    type = external_meta[:type]
+    args_types = type.args_types
+    ^arg_count = length(args_types)
+    # Go ahead and make a wrapper function for calling from non-typed code
+    bindings =
+      args_types
+      |> Enum.with_index()
+      |> Enum.map(&{:binding, [type: elem(&1,0)], [String.to_atom("#{func_name}__var__#{elem(&1,1)}")]})
+    convert_to_javascript_module_body_ast(env, {:def, external_meta, [name, bindings, {:call, external_meta, [{modules, func_name, arg_count}, bindings]}]})
+  end
+  defp convert_to_javascript_module_body_ast(env, {:def, _def_meta, [name, args, body_expr]}) when is_atom(name) and is_list(args) and not is_list(body_expr) do
+    [
+      "function ", to_string(name), "(", Enum.map(args, &convert_to_javascript_module_body_ast(env, &1)) |> Enum.intersperse(", "), ") {", ?\n,
       ?\t, "return ", convert_to_javascript_module_body_ast(env, body_expr), ?;, ?\n,
       ?}, ?\n,
     ]
@@ -956,7 +992,7 @@ opts = Keyword.put(opts, :full_stack, true)
     convert_to_javascript_module_body_ast(env, arg1)
   end
   # An unapplied enumeration head, make an anonymous function to hold it
-  defp convert_to_javascript_module_body_ast(_env, {:enumeration_head, meta, [name, apply_type]}) do
+  defp convert_to_javascript_module_body_ast(_env, {:enumeration_head, _meta, [name, _apply_type]}) do
     [ "function(__ANON_ARG__){return['",
       to_string(name),
       "', __ANON_ARG__];}",
