@@ -2,6 +2,33 @@ defmodule TypedElixir.HMEnv do
   defstruct counters: %{}, types: %{}, scopes: [], type_ptrs: %{}, user: []
 
 
+
+  def debug?(opts, section)
+  def debug?(%{user: opts}, section), do: debug?(opts, section)
+  def debug?(opts, section) do
+    debugOpts = opts[:debug] || []
+    true === debugOpts || section in debugOpts || :all in debugOpts
+  end
+
+  def debug(val, opts, section, prefix \\ nil)
+  def debug(val, %{user: opts}, section, prefix), do: debug(val, opts, section, prefix)
+  def debug(val, opts, section, prefix) do
+    # debugOpts = opts[:debug] || []
+    isEnabled = debug?(opts, section) # true === debugOpts || section in debugOpts || :all in debugOpts
+    if isEnabled do
+      if prefix do
+        IO.inspect({section, prefix, val})
+        val
+      else
+        IO.inspect({section, val})
+        val
+      end
+    else
+      val
+    end
+  end
+
+
   def new_counter(env, key) do
     {value, counters} = Map.get_and_update(env.counters, key, fn
       nil -> {0, 1}

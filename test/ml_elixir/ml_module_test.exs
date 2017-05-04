@@ -7,6 +7,16 @@ defmlmodule MLModuleTest do
 
   type type_definition = integer
 
+  type record_emb_0 = %{a: %{b: %{c: type_definition}}}
+
+  type testering_enum
+  | none
+  | one
+  | integer integer
+  | two
+  | float float
+  | float2 float
+
   def test_int_untyped = 42
   def test_int_typed | integer = 42
   def test_float_untyped = 6.28
@@ -22,6 +32,8 @@ defmlmodule MLModuleTest do
   def test_blockN1(x) do x end
   def test_blockT1(x | !id_type) | !id_type do x end
   def test_noblockT1(x | !id_type) | !id_type = x
+  def test_record | record_emb_0 = %{a: %{b: %{c: 42}}}
+  def test_record_sub(r | record_emb_0) = r.a
 
 end
 

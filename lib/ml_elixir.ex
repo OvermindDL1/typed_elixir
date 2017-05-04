@@ -28,25 +28,7 @@ defmodule MLElixir do
   end
 
 
-
-
-  defp debug(val, opts, section, prefix \\ nil)
-  defp debug(val, %{user: opts}, section, prefix), do: debug(val, opts, section, prefix)
-  defp debug(val, opts, section, prefix) do
-    debugOpts = opts[:debug] || []
-    isEnabled = true === debugOpts || section in debugOpts || :all in debugOpts
-    if isEnabled do
-      if prefix do
-        IO.inspect({section, prefix, val})
-        val
-      else
-        IO.inspect({section, val})
-        val
-      end
-    else
-      val
-    end
-  end
+  import TypedElixir.HMEnv, only: [debug: 3, debug: 4, debug?: 2]
 
 
 
@@ -109,7 +91,9 @@ opts = Keyword.put(opts, :full_stack, true)
     module_output =
       case opts[:output_format] do
         elixir when elixir in [nil, :elixir, Elixir] ->
-          convert_to_elixir_module_ast(env, name, name_meta, module_mlbody, module_type)
+          module_output = convert_to_elixir_module_ast(env, name, name_meta, module_mlbody, module_type)
+          if(debug?(env, :module_pretty_output), do: module_output |> Macro.to_string() |> IO.puts())
+          module_output
         javascript when javascript in [:javascript, Javascript, :js, Js, JavaScript, JS] ->
           convert_to_javascript_module_text(env, name, name_meta, module_mlbody, module_type)
       end
@@ -127,10 +111,13 @@ opts = Keyword.put(opts, :full_stack, true)
           {env, type} = Type.get_type_or_ptr_type(env, meta[:type])
           types = Map.put(types, name, type)
           {env, types}
-        ({:def, _meta, [_name, _args, _body]}, {env, types}) ->
-          # {env, type} = Type.get_type_or_ptr_type(env, meta[:type])
-          # types = Map.put(types, name, type)
-          # {env, types}
+        ({:def, _meta, [name, args, {_, body_meta, _}]}, {env, types}) ->
+          {env, args_types} = HMEnv.map_env(env, args, fn(env, {_, meta, _}) -> {env, meta[:type]} end)
+          return_type = body_meta[:type]
+          is_indirect = false
+          call = nil
+          {env, type} = Type.Func.new(env, args_types, return_type, is_indirect, call)
+          types = Map.put(types, name, type)
           {env, types}
         ({:external, _meta, _args}, {env, types}) ->
           {env, types}
@@ -145,11 +132,11 @@ opts = Keyword.put(opts, :full_stack, true)
   # Untyped module
   defp parse_defmlmodule_name_meta(env, name) when is_atom(name) do
     {env, type} = Type.Ptr.Unbound.new_ptr(env)
-    {env, name, [type: type]}
+    {env, [name], [type: type]}
   end
-  defp parse_defmlmodule_name_meta(env, {:__aliases__, meta, [name]}) when is_atom(name) do
+  defp parse_defmlmodule_name_meta(env, {:__aliases__, meta, [name|_]=names}) when is_atom(name) do
     {env, type} = Type.Ptr.Unbound.new_ptr(env)
-    {env, name, [type: type] ++ meta}
+    {env, names, [type: type] ++ meta}
   end
   # Typed module
   defp parse_defmlmodule_name_meta(env, {:|, _type_meta, [name_ast, type_ast]}) do
@@ -228,6 +215,16 @@ opts = Keyword.put(opts, :full_stack, true)
   defp parse_module_expression(env, {:defexternal, ext_meta, ext_args}) do
     parse_module_external(env, ext_meta, ext_args)
   end
+  # defp parse_module_expression(env, {:defmacro, defmacro_meta, defmacro_args}) do
+  #   # parse_module_defmacro(env, defmacro_meta, defmacro_args)
+  # end
+  # defp parse_module_expression(env, {:letmacro, defmacro_meta, defmacro_args}) do
+  #   # parse_module_defmacro(env, defmacro_meta, defmacro_args)
+  # end
+  # defp parse_module_expression(env, {:letmacro, defmacro_meta, defmacro_args}) do
+  #   # parse_module_defmacro(env, defmacro_meta, defmacro_args)
+  # end
+  defp parse_module_expression(env, nil), do: {env, nil}
   defp parse_module_expression(_env, expr) do
     throw {:TODO, :unhandled_module_expression, expr}
   end
@@ -263,6 +260,13 @@ opts = Keyword.put(opts, :full_stack, true)
         {env, type}
       type -> {env, type}
     end
+  end
+  # External module type
+  defp parse_type_expression(env, {:__aliases__, _alias_meta, alias_args}) do
+    module = Module.concat(alias_args)
+    {:module, ^module} = wait_ensure_loaded(module)
+    ml_module_info = module.ml_module_info()
+    {env, ml_module_info.type} # The module_type
   end
   # Type refinement
   defp parse_type_expression(env, {{:., dot_meta, type_name_ast}, _meta, refinements}) do
@@ -301,7 +305,7 @@ opts = Keyword.put(opts, :full_stack, true)
               end
             %Type.Module{types: types} ->
               case types[type_name] do
-                nil -> throw {:NO_TYPE_ON_MODULE_TYPE, dot_meta[:line], name, type_name}
+                nil -> throw {:NO_TYPE_ON_MODULE_TYPE, [line: dot_meta[:line]], name, type_name, types}
                 type -> type
               end
             type -> throw {:UNSUPPORTED_TYPE, dot_meta[:line], name, type_name, type}
@@ -319,8 +323,9 @@ opts = Keyword.put(opts, :full_stack, true)
         unknown -> throw {:TODO, :unhandled_module_refinement_module_name, unknown}
       end
     case {refinements, unrefined_type} do
-      {[], %Type.Const{} = type} -> {env, type} # Cannot refine a Type.Const, nothing 'to' refine...
-      {[], %Type.Module{} = type} -> {env, type}
+      # {[], %Type.Const{} = type} -> {env, type}
+      # {[], %Type.Module{} = type} -> {env, type}
+      {[], type} -> {env, type} # If no refinements then return the type directly
       {[refinements], %Type.Module{} = type} when is_list(refinements) ->
         {env, type} =
           Enum.reduce(refinements, {env, type}, fn
@@ -386,6 +391,11 @@ opts = Keyword.put(opts, :full_stack, true)
     {env, type} = Type.Record.new(env, typed_labels)
     {env, type}
   end
+  defp parse_type_expression(env, {:{}, _meta, args}) do
+    {env, elements} = HMEnv.map_env(env, args, &parse_type_expression/2)
+    {env, type} = Type.Tuple.new(env, elements)
+    {env, type}
+  end
   # Named type
   defp parse_type_expression(env, {name, _meta, name_context}) when is_atom(name) and (name_context === nil or name_context === []) do
     key = Key.typename(name)
@@ -398,7 +408,7 @@ opts = Keyword.put(opts, :full_stack, true)
   defp parse_type_expression(env, {name, _meta, args}) when is_atom(name) and is_list(args) do
     key = Key.typename(name)
     case HMEnv.get_type(env, key) do
-      nil -> throw {:TYPENAME_DOES_NOT_EXIST, name}
+      nil -> throw {:TYPENAME_DOES_NOT_EXIST, name, args}
       %Type.App{} = type ->
         {env, args_types} = HMEnv.map_env(env, args, &parse_type_expression/2)
         {env, type} = Type.App.refine(env, type, args_types)
@@ -479,6 +489,13 @@ opts = Keyword.put(opts, :full_stack, true)
         false ->
           {env, _} =
             HMEnv.map_env(env, heads, fn
+              (env, {head_name, %Type.Tuple{elements: []}}) when is_atom(head_name) ->
+                key = Key.enumeration(head_name)
+                value = {nil, type}
+                env = HMEnv.push_type(env, key, value)
+                call_type = {:enum, [type: type], [:tuple, head_name]}
+                env = add_call(env, head_name, call_type, type)
+                {env, nil}
               (env, {head_name, head_type}) when is_atom(head_name) ->
                 key = Key.enumeration(head_name)
                 value = {head_type, type}
@@ -490,7 +507,7 @@ opts = Keyword.put(opts, :full_stack, true)
                 key = Key.enumeration(head_name)
                 value = {nil, type}
                 env = HMEnv.push_type(env, key, value)
-                call_type = {:const, [type: type], head_name}
+                call_type = {:enum, [type: type], [:single, head_name]}
                 env = add_call(env, head_name, call_type, type)
                 {env, nil}
             end)
@@ -613,8 +630,35 @@ opts = Keyword.put(opts, :full_stack, true)
     {env, return_type} = Type.Ptr.Unbound.new_ptr(env)
     parse_module_def_impl(env, meta, name, args_ast, return_type, body_expr)
   end
+  # Macro invocation
+  defp parse_module_def(env, meta, [{:&, _macrocall_meta, [{macro_name, _macro_meta, macro_args}]}]) do
+    parse_module_macro_impl(env, meta, macro_name, macro_args)
+  end
   defp parse_module_def(_env, _meta, definition) do
     throw {:TODO, :unhandled_def_expression, definition}
+  end
+
+
+  defp parse_module_macro_impl(env, meta, macro_name, macro_args)
+  defp parse_module_macro_impl(env, meta, :macro, [{:|, type_meta, [{macro_name, macro_meta, macro_args}, {:=, equals_meta, [type_expr, body_expr]}]}]) when is_atom(macro_name) do
+    macro_args = List.wrap(macro_args)
+    {env, return_type} = parse_type_expression(env, type_expr)
+    parse_module_def_impl(env, meta, macro_name, macro_args, return_type, body_expr)
+    |> throw
+  end
+  defp parse_module_macro_impl(env, meta, :macro, [{:|, type_meta, [{macro_name, macro_meta, macro_args}, type_expr]}, [do: body_expr]]) do
+    parse_module_macro_impl(env, meta, :macro, [{:|, macro_meta, [{macro_name, macro_meta, macro_args}, {:=, macro_meta, [type_expr, body_expr]}]}])
+  end
+  defp parse_module_macro_impl(env, meta, :macro, [{macro_name, macro_meta, macro_args}, [do: body_expr]]) do
+    type_expr = {{:., meta, [{:__aliases__, meta, [:MLElixir, :MLMacro]}, :ast]}, meta, []} # Default this type
+    parse_module_macro_impl(env, meta, :macro, [{:|, macro_meta, [{macro_name, macro_meta, macro_args}, {:=, meta, [type_expr, body_expr]}]}])
+  end
+  defp parse_module_macro_impl(env, meta, :macro, [{:=, equals_meta, [{macro_name, macro_meta, macro_args}, body_expr]}]) do
+    type_expr = {{:., meta, [{:__aliases__, meta, [:MLElixir, :MLMacro]}, :ast]}, meta, []} # Default this type
+    parse_module_macro_impl(env, meta, :macro, [{:|, macro_meta, [{macro_name, macro_meta, macro_args}, {:=, equals_meta, [type_expr, body_expr]}]}])
+  end
+  defp parse_module_macro_impl(_env, _meta, macro_name, macro_args) do
+    throw {:TODO, :unhandled_macro_call, macro_name, macro_args}
   end
 
 
@@ -631,6 +675,18 @@ opts = Keyword.put(opts, :full_stack, true)
     {_, body_meta, _} = body
     body_type = body_meta[:type]
     {env, return_type} = Type.resolve_types!(env, body_type, return_type)
+    {env, args_types} =
+      HMEnv.map_env(env, args_types, fn (env, arg_type) -> Type.map_types(env, arg_type, fn(env, v) ->
+        case Type.get_type_or_ptr_type(env, v) do
+          {env, %Type.Ptr.Generic{}=gen} ->
+            case Type.get_generic_bound(env, gen) do
+              ^gen -> {env, v}
+              actual_type -> {env, actual_type}
+            end
+          _res -> {env, v}
+        end
+      end) end)
+    {env, args} = HMEnv.zipmap_env(env, args, args_types, fn(env, {binding, meta, args}, type) -> {env, {binding, [type: type]++meta, args}} end)
     {env, _scope} = HMEnv.pop_scope(env, :def)
     {env, args_types} = Type.generify_unbound(env, args_types)
     {env, func_type} = Type.Func.new(env, args_types, return_type, false, nil)
@@ -702,13 +758,43 @@ opts = Keyword.put(opts, :full_stack, true)
         # Else check if there is an enumeration head exposed with this name
         key = Key.enumeration(name)
         case HMEnv.get_type(env, key) do
-          nil -> throw {:BINDING_NOT_FOUND, name}
-          {nil, type} ->
-            ast = {:const, [type: type], name} # argumentless enum head
+          nil ->
+            # Else check if there is a 0-arity function with this name
+            key = Key.func(name, 0)
+            case HMEnv.get_type(env, key) do
+              nil -> throw {:BINDING_NOT_FOUND, name}
+              %Type.Func{return_type: return_type} ->
+                ast = {:call, [type: return_type]++meta, [{name, 0}, []]}
+                {env, ast}
+            end
+          {nil, %Type.GADT{heads: heads}=type} ->
+            Enum.find_value(heads, nil, fn
+              ^name ->
+                ast = {:enum, [type: type], [:single, name]} # argumentless enum head
+                {env, ast}
+              {^name, %Type.Tuple{elements: []}} ->
+                ast = {:enum, [type: type], [:tuple, name]} # argumentless enum tuple head
+                {env, ast}
+              {^name, value} -> throw {:blah, value}
+              _ -> nil
+            end)
+            |> case do
+              nil -> throw {:INVALID_GADT_HEAD, name, heads}
+              result -> result
+            end
+          # {nil, type} ->
+          #   ast = {:enum, [type: type], [:single, name]} # argumentless enum head
+          #   {env, ast}
+          {%Type.Const{}=apply_type, type} ->
+            ast = {:enum, [type: type]++meta, [:incomplete, :value, name, [apply_type], []]}
             {env, ast}
-          {apply_type, type} ->
-            ast = {:enumeration_head, [type: type], [name, apply_type]}
+          {%Type.Tuple{elements: elements}, type} ->
+            ast = {:enum, [type: type]++meta, [:incomplete, :tuple, name, elements, []]}
             {env, ast}
+          # {apply_type, type} ->
+          #   ast = {:enumeration_head, [type: type], [name, apply_type]}
+          #   {env, ast}
+          {apply_type, type} -> throw {:TODO, :unhandled_gadt_enum_typing, apply_type}
         end
       type ->
         ast = {:binding, [type: type] ++ meta, [name]}
@@ -731,29 +817,150 @@ opts = Keyword.put(opts, :full_stack, true)
     ast = {:record, [type: type] ++ meta, kwargs}
     {env, ast}
   end
+  # Create tuple
+  defp parse_ml_expression(env, {:{}, meta, args_ast}) when is_list(args_ast) do
+    {env, args} = HMEnv.map_env(env, args_ast, &parse_ml_expression/2)
+    args_types = Enum.map(args, &(elem(&1, 1)[:type]))
+    {env, type} = Type.Tuple.new(env, args_types)
+    ast = {:tuple, [type: type] ++ meta, args}
+    {env, ast}
+  end
+  # Irritating Elixir, loses meta and all...
+  defp parse_ml_expression(env, {left, right}), do: parse_ml_expression(env, {:{}, [], [left, right]})
+  # Call external function
+  defp parse_ml_expression(env, {{:., _dot_meta, [{:__aliases__, _alias_meta, module_names}=module_type_expr, name]}, call_meta, args}) do
+    {env, type} = parse_type_expression(env, module_type_expr)
+    {env, args_asts} = HMEnv.map_env(env, args, &parse_ml_expression/2)
+    case type do
+      %Type.Module{types: %{^name => %Type.Func{args_types: args_types, return_type: return_type}}} when length(args_types) === length(args) ->
+        ast = {:call, [type: return_type]++call_meta, [{module_names, name, length(args_types)}, args_asts]}
+        {env, ast}
+      %Type.Module{types: %{^name => %Type.GADT{heads: heads}=gadt}} ->
+        {env, {:invalid, [type: gadt]++call_meta, []}}
+      %Type.Module{types: types} -> throw {:MODULE_DOES_NOT_HAVE_FUNCTION, name, length(args), types}
+      unknown_type -> throw {:NOT_A_MODULE_TYPE_WHEN_CALLING, name, unknown_type}
+    end
+  end
+  # Call external 'something'
+  defp parse_ml_expression(env, {{:., dot_meta, [called_expr, name]}, call_meta, args_expr}) when is_atom(name) do
+  {env, args_asts} = HMEnv.map_env(env, args_expr, &parse_ml_expression/2)
+    case parse_ml_expression(env, called_expr) do
+      {env, {:invalid, meta, _}} -> # A Type, can we do something with it?
+        case meta[:type] do
+          %Type.GADT{heads: heads} = type ->
+            args_length = length(args_asts)
+            Enum.find_value(heads, nil, fn
+              ^name when args_length === 0 ->
+                ast = {:enum, [type: type]++call_meta, [:single, name]}
+                {env, ast}
+              {^name, %Type.Tuple{elements: []}} when args_length === 0 ->
+                ast = {:enum, [type: type]++call_meta, [:tuple, name]}
+                {env, ast}
+              {^name, %Type.Tuple{elements: elements}} when args_length === length(elements) ->
+                args_asts_types = Enum.map(args_asts, &(elem(&1, 1)[:type]))
+                {env, _resolved_types} = HMEnv.zipmap_env(env, elements, args_asts_types, &Type.resolve_types!/3)
+                ast = {:enum, [type: type]++call_meta, [:tuple, name | args_asts]}
+                {env, ast}
+              {^name, %Type.Const{}=head_arg_type} when args_length === 1 ->
+                [{_, arg_meta, _}=arg_ast] = args_asts
+                arg_type = arg_meta[:type]
+                {env, _resolved_type} = Type.resolve_types!(env, head_arg_type, arg_type)
+                ast = {:enum, [type: type]++call_meta, [:value, name, arg_ast]}
+                {env, ast}
+              {^name, head_arg_type} when args_length === 0 ->
+                ast = {:enumeration_head, [type: type]++call_meta, [name, head_arg_type]}
+                {env, ast}
+              _ -> nil
+            end)
+            |> case do
+              nil -> throw {:HEAD_NOT_FOUND_ON_GADT, name, args_length, heads}
+              ast -> ast
+            end
+          unhandled_type -> throw {:TODO, :unhandled_dot_on_type, name, unhandled_type}
+        end
+      {env, {_, meta, _}=called_ast} -> # Callables
+        case meta[:type] do
+          %Type.Record{labels: labels} = called_type ->
+            case labels[name] do
+              nil -> throw {:INVALID_RECORD_KEY, name, called_type}
+              value_type ->
+                ast = {:record_access, [type: value_type]++dot_meta, [called_ast, name]}
+                {env, ast}
+            end
+          unhandled_type -> throw {:TODO, :unhandled_call_on_type, unhandled_type}
+        end
+    end
+
+    # {env, {_, meta, _}=called_ast} = parse_ml_expression(env, called_expr)
+    # called_type = meta[:type]
+    # case called_type do
+    #   %Type.Record{labels: labels} ->
+    #     case labels[name] do
+    #       nil -> throw {:INVALID_RECORD_KEY, name, called_type}
+    #       value_type ->
+    #         ast = {:record_access, [type: value_type]++dot_meta, [called_ast, name]}
+    #         {env, ast}
+    #     end
+    #   unhandled_type -> throw {:TODO, :unhandled_call_on_type, unhandled_type}
+    # end
+  end
   # Call 'something'
   defp parse_ml_expression(env, {name, meta, args}) when is_atom(name) and is_list(args) do
     key = Key.call(name)
     case HMEnv.get_type(env, key) do
-      nil -> throw {:CALL_NOT_FOUND, name, env.types}
+      nil ->
+        key = Key.func(name, length(args))
+        case HMEnv.get_type(env, key) do
+          nil -> throw {:CALL_NOT_FOUND, name, args, env.types}
+          %Type.Func{args_types: args_types, return_type: return_type} ->
+            {env, args_ast} = HMEnv.zipmap_env(env, args_types, args, fn
+              (env, apply_type, arg) ->
+                {env, {_, arg_meta, _} = arg_ast} = parse_ml_expression(env, arg)
+                arg_type = arg_meta[:type]
+                {env, _resolved_type} = Type.resolve_types!(env, arg_type, apply_type)
+                {env, arg_ast}
+            end)
+            ast = {:call, [type: return_type] ++ meta, [{name, length(args)}, args_ast]}
+            {env, ast}
+        end
       {{:const, const_meta, value}, type} when args === [] ->
         ast = {:const, [type: type] ++ const_meta ++ meta, value}
         {env, ast}
-      {{:enumeration_head, head_meta, [name, apply_type]}, type} ->
-        case apply_type do
-          %Type.Const{const: _const} ->
-            case args do
-              [] -> {env, {:enumeration_head, [type: type], [name, apply_type]}}
-              [arg] ->
+      {{:enum, head_meta, args}, type} ->
+        ast = {:enum, [type: type] ++ head_meta ++ meta, args}
+        {env, ast}
+      {{:enumeration_head, head_meta, [name | apply_type]}, type} ->
+        case args do
+          [] ->
+            {:enumeration_head, [type: type], [name, apply_type]}
+          [arg|_] ->
+            {env, args_asts} = HMEnv.map_env(env, args, &parse_ml_expression/2)
+            case apply_type do
+              [%Type.Const{const: _const}=apply_type] when length(args)===1 ->
                 {env, {_, arg_meta, _} = arg} = parse_ml_expression(env, arg)
                 arg_type = arg_meta[:type]
                 {env, _resolved_type} = Type.resolve_types!(env, arg_type, apply_type)
-                {env, name_type} = Type.Const.new(env, :atom, values: [name])
-                name_ast = {:const, [type: name_type], name}
-                ast = {:enum_single, [type: type] ++ head_meta, [name_ast, arg]}
+                # {env, name_type} = Type.Const.new(env, :atom, values: [name])
+                # name_ast = {:const, [type: name_type], name}
+                # ast = {:enum_single, [type: type] ++ head_meta, [name_ast, arg]}
+                ast = {:enum, [type: type] ++ head_meta, [:value, name, arg]}
                 {env, ast}
+              [%Type.Tuple{elements: elements} | args_so_far] ->
+                testing_args = args_so_far ++ args_asts
+                testing_args_types = Enum.map(testing_args, &(elem(&1, 1)[:type]))
+                testing_elements = Enum.take(elements, length(testing_args_types))
+                remaining_elements = Enum.drop(elements, length(testing_args_types))
+                {env, _resolved} = HMEnv.zipmap_env(env, testing_args_types, testing_elements, &Type.resolve_types!/3)
+                ast =
+                  if length(testing_args) === length(elements) do
+                    {:enum, [type: type]++head_meta, [:tuple, name | testing_args]}
+                  else
+                    # if(name===:tuple_enum2, do: throw type)
+                    {:enum, [type: type]++head_meta, [:incomplete, :tuple, name, remaining_elements, testing_args]}
+                  end
+                {env, ast}
+              unhandled -> throw {:TODO, :unhandled_call_enumeration_type, unhandled}
             end
-          unhandled -> throw {:TODO, :unhandled_call_enumeration_type, unhandled}
         end
       {{:external_call, ext_meta, [{modules, func_name, arg_count}]}, type} ->
         case ext_meta[:type] do
@@ -792,9 +999,9 @@ opts = Keyword.put(opts, :full_stack, true)
 
 
 
-  defp convert_to_elixir_module_ast(env, name, name_metae, module_mlast, module_type)
-  defp convert_to_elixir_module_ast(env, name, name_meta, module_mlasts, module_type) when is_atom(name) and is_list(module_mlasts) do
-    name_ast = {:__aliases__, [alias: false], [name]}
+  defp convert_to_elixir_module_ast(env, names, name_metae, module_mlast, module_type)
+  defp convert_to_elixir_module_ast(env, [name|_]=names, name_meta, module_mlasts, module_type) when is_atom(name) and is_list(module_mlasts) do
+    name_ast = {:__aliases__, [alias: false], names}
     body_ast = Enum.map(module_mlasts, &convert_to_elixir_module_body_ast(env, &1)) |> Enum.filter(&(&1))
     ml_module_info_ast = generate_ml_module_info(env, module_type)
     modulebody_ast = [name_ast, [do: {:__block__, [], body_ast ++ ml_module_info_ast}]]
@@ -802,8 +1009,8 @@ opts = Keyword.put(opts, :full_stack, true)
     defmodule_ast
     # throw env.types
   end
-  defp convert_to_elixir_module_ast(_env, name, name_meta, module_mlast, _module_type) do
-    throw [:TODO, :convert_to_elixir_module_ast, name, name_meta, module_mlast]
+  defp convert_to_elixir_module_ast(_env, names, name_meta, module_mlast, _module_type) do
+    throw [:TODO, :convert_to_elixir_module_ast, names, name_meta, module_mlast]
   end
 
 
@@ -831,30 +1038,49 @@ opts = Keyword.put(opts, :full_stack, true)
     bindings =
       args_types
       |> Enum.with_index()
-      |> Enum.map(&{:binding, [type: elem(&1,0)], [String.to_atom("#{func_name}__var__#{elem(&1,1)}")]})
+      |> Enum.map(&{:binding, [type: elem(&1,0)], [String.to_atom("var_#{elem(&1,1)}")]})
     convert_to_elixir_module_body_ast(env, {:def, external_meta, [name, bindings, {:call, external_meta, [{modules, func_name, arg_count}, bindings]}]})
   end
   defp convert_to_elixir_module_body_ast(env, {:def, def_meta, [name, args, body_expr]}) when is_atom(name) and is_list(args) and not is_list(body_expr) do
     args_ast = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
     name_ast = {name, [], args_ast}
     guards_ast =
-      Enum.map(args, fn
-        {:binding, m, _} = binding_ast ->
-          bound_ast = convert_to_elixir_module_body_ast(env, binding_ast)
-          case m[:type] do
-            nil -> throw {:TODO, :AST_WITHOUT_TYPE, binding_ast}
-            type ->
-              case Type.get_type_or_ptr_type(env, type) do # TODO:  Type the guards?  Probably no point...
-                {_env, %Type.Ptr.Generic{}} -> []
-                {_env, %Type.Const{const: :integer}} -> {:is_integer, m, [bound_ast]}
-                {_env, %Type.Const{const: :float}} -> {:is_float, m, [bound_ast]}
-                {_env, %Type.Const{const: :atom}} -> {:is_atom, m, [bound_ast]}
-                {_env, unhandled} -> throw {:TODO, :unhandled_arg_guard_type, unhandled, binding_ast}
-              end
-          end
-        unhandled -> throw {:TODO, :unhandled_arg_guard, unhandled}
-      end)
-      |> List.flatten()
+      if env.user[:disable_guards] do
+        []
+      else
+        Enum.map(args, fn
+          {:binding, m, _} = binding_ast ->
+            bound_ast = convert_to_elixir_module_body_ast(env, binding_ast)
+            case m[:type] do
+              nil -> throw {:TODO, :AST_WITHOUT_TYPE, binding_ast}
+              type ->
+                {env, bound_type} =
+                  Type.get_type_or_ptr_type(env, type)
+                  |> case do
+                    # {env, %Type.Ptr.Generic{}=gen} -> {env, Type.get_generic_bound(env, gen)}
+                    result -> result
+                  end
+                case Type.get_type_or_ptr_type(env, type) do # TODO:  Type the guards?  Probably no point...
+                  {_env, %Type.Ptr.Generic{}} -> []
+                  {_env, %Type.Const{const: :integer}} -> {:is_integer, m, [bound_ast]}
+                  {_env, %Type.Const{const: :float}} -> {:is_float, m, [bound_ast]}
+                  {_env, %Type.Const{const: :atom}} -> {:is_atom, m, [bound_ast]}
+                  {_env, %Type.Record{labels: _labels}} -> {:is_map, m, [bound_ast]} # TODO:  Add a matching context for this
+                  {_env, %Type.Tuple{elements: elements}} ->
+                    [
+                      {:is_tuple, m, [bound_ast]},
+                      {:===, m, [
+                        {:tuple_size, m, [bound_ast]},
+                        length(elements)
+                      ]} # TODO:  Recursively test through a tuple, need to pull out the guard generator into another function to be able to do that...
+                    ]
+                  {_env, unhandled} -> throw {:TODO, :unhandled_arg_guard_type, unhandled, binding_ast}
+                end
+            end
+          unhandled -> throw {:TODO, :unhandled_arg_guard, unhandled}
+        end)
+        |> List.flatten()
+      end
     when_ast =
       case guards_ast do
         [] -> name_ast
@@ -866,10 +1092,15 @@ opts = Keyword.put(opts, :full_stack, true)
     ast = {:def, def_meta, [when_ast, [do: body_ast]]}
     ast
   end
-  defp convert_to_elixir_module_body_ast(env, {:call, external_meta, [{modules, func_name, arg_count}, args]}) do
+  defp convert_to_elixir_module_body_ast(env, {:call, meta, [{modules, func_name, arg_count}, args]}) do
     ^arg_count = length(args)
     args_ast = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
-    {{:., [], [{:__aliases__, [alias: false], modules}, func_name]}, external_meta, args_ast}
+    {{:., [], [{:__aliases__, [alias: false], modules}, func_name]}, meta, args_ast}
+  end
+  defp convert_to_elixir_module_body_ast(env, {:call, meta, [{func_name, arg_count}, args]}) do
+    ^arg_count = length(args)
+    args_ast = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
+    {func_name, meta, args_ast}
   end
   defp convert_to_elixir_module_body_ast(_env, {:binding, meta, [name]}) when is_atom(name) do
     {name, meta, nil}
@@ -879,37 +1110,82 @@ opts = Keyword.put(opts, :full_stack, true)
   end
   # An unapplied enumeration head, make an anonymous function to hold it
   defp convert_to_elixir_module_body_ast(_env, {:enumeration_head, meta, [name, apply_type]}) do
+    name_var = {name, [], nil}
     {:fn, fn_meta, fn_body} =
       case apply_type do
         %Type.Const{const: :integer} ->
-          name_var = {name, [], nil}
           quote do
             fn (unquote(name_var)) when is_integer(unquote(name_var)) -> {unquote(name), unquote(name_var)} end
           end
         %Type.Const{const: :float} ->
-          name_var = {name, [], nil}
           quote do
             fn (unquote(name_var)) when is_float(unquote(name_var)) -> {unquote(name), unquote(name_var)} end
           end
         %Type.Const{const: :atom} ->
-          name_var = {name, [], nil}
           quote do
             fn (unquote(name_var)) when is_atom(unquote(name_var)) -> {unquote(name), unquote(name_var)} end
           end
-        type -> throw {:TODO, :unhandled_elixir_enumeration_type, type}
+        type -> throw {:TODO, :unhandled_elixir_enumeration_type, name, type}
       end
     {:fn, meta ++ fn_meta, fn_body}
   end
-  # single values enums shall be represented
-  defp convert_to_elixir_module_body_ast(env, {:enum_single, _meta, [arg0, arg1]}) do
-    arg0 = convert_to_elixir_module_body_ast(env, arg0)
-    arg1 = convert_to_elixir_module_body_ast(env, arg1)
-    {arg0, arg1}
+  # Enum values
+  defp convert_to_elixir_module_body_ast(env, {:enum, meta, enum_args}) do
+    case enum_args do
+      [:single, name] -> name
+      [:value, name, value] -> {name, convert_to_elixir_module_body_ast(env, value)}
+      [:tuple, name | args] -> {:{}, meta, [name | Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))]}
+      [:incomplete, type, name, args, already_complete] ->
+        already_complete_args_ast = Enum.map(already_complete, &convert_to_elixir_module_body_ast(env, &1))
+        {args_ast, guards_ast, _counter} = Enum.reduce(args, {[], [], 0}, fn (v, {args, guards, counter}) ->
+          arg =
+            Macro.var(String.to_atom("var_#{to_string(counter)}"), nil)
+          guard =
+            case v do
+              %Type.Const{const: :float} -> quote(do: is_float(unquote(arg)))
+              %Type.Const{const: :integer} -> quote(do: is_integer(unquote(arg)))
+              %Type.Const{const: :atom} -> quote(do: is_atom(unquote(arg)))
+              _v -> []
+            end
+            |> List.wrap()
+          {args ++ [arg], guard ++ guards, counter+1}
+        end)
+        head_ast =
+          case guards_ast do
+            [] -> args_ast
+            _ ->
+              guards_ast = Enum.reduce(guards_ast, fn(prior, next) -> {:and, [], [prior, next]} end)
+              [{:when, [], args_ast ++ [guards_ast]}]
+          end
+        body_ast =
+          case type do
+            :value when length(args_ast)===1 -> {:{}, meta, [name | args_ast]}
+            :tuple -> {:{}, meta, [name] ++ already_complete_args_ast ++ args_ast}
+            v -> throw {:TODO, :unhandled_enum_body_type, v, length(args_ast)}
+          end
+        ast = {:fn, [], [{:->, [], [head_ast, body_ast]}]}
+        ast
+    end
   end
+  # single values enums shall be represented
+  # defp convert_to_elixir_module_body_ast(env, {:enum_single, _meta, [arg0, arg1]}) do
+  #   arg0 = convert_to_elixir_module_body_ast(env, arg0)
+  #   arg1 = convert_to_elixir_module_body_ast(env, arg1)
+  #   {arg0, arg1}
+  # end
   # Records (in Elixir as maps)
   defp convert_to_elixir_module_body_ast(env, {:record, meta, args}) do
     args_ast = Enum.map(args, fn({label, arg}) -> {label, convert_to_elixir_module_body_ast(env, arg)} end)
     {:%{}, meta, args_ast}
+  end
+  defp convert_to_elixir_module_body_ast(env, {:record_access, meta, [record, name]}) when is_atom(name) do
+    record_ast = convert_to_elixir_module_body_ast(env, record)
+    {{:., meta, [:maps, :get]}, meta, [name, record_ast]}
+  end
+  # Tuples
+  defp convert_to_elixir_module_body_ast(env, {:tuple, meta, args}) do
+    args_ast = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
+    {:{}, meta, args_ast}
   end
   defp convert_to_elixir_module_body_ast(_env, {:const, _meta, value}), do: value
   defp convert_to_elixir_module_body_ast(_env, module_expr) do
@@ -920,11 +1196,11 @@ opts = Keyword.put(opts, :full_stack, true)
 
   ### Javascript output
 
-  defp convert_to_javascript_module_text(env, name, name_metae, module_mlast, module_type)
-  defp convert_to_javascript_module_text(env, name, _name_meta, module_mlasts, module_type) when is_atom(name) and is_list(module_mlasts) do
+  defp convert_to_javascript_module_text(env, names, name_metae, module_mlast, module_type)
+  defp convert_to_javascript_module_text(env, [name|_]=names, _name_meta, module_mlasts, module_type) when is_atom(name) and is_list(module_mlasts) do
     _ml_module_info_ast = generate_ml_module_info(env, module_type)
     [
-      "// Module Name:  ", to_string(name), ?\n,
+      "// Module Name:  ", Enum.join(names, "."), ?\n,
       "// Version: 0.0.1", ?\n, ?\n,
       Enum.map(module_mlasts, &convert_to_javascript_module_body_ast(env, &1)),
     ]
@@ -937,6 +1213,10 @@ opts = Keyword.put(opts, :full_stack, true)
   defp escape_js_string(atom) when is_atom(atom), do: escape_js_string(to_string(atom))
   defp escape_js_string(string) when is_binary(string) do
     string
+  end
+
+  defp create_js_string(value) do
+    [?", escape_js_string(value), ?"]
   end
 
 
@@ -987,9 +1267,41 @@ opts = Keyword.put(opts, :full_stack, true)
       ?}, ?\n,
     ]
   end
-  # single values enums shall be represented
-  defp convert_to_javascript_module_body_ast(env, {:enum_single, _meta, [_arg0, arg1]}) do
-    convert_to_javascript_module_body_ast(env, arg1)
+  # Enums
+  defp convert_to_javascript_module_body_ast(env, {:enum, _meta, [enum_type, name | enum_args]}) do
+    name_ast = create_js_string(name)
+    case [enum_type | enum_args] do
+      [:single] -> name_ast
+      [:value, value] -> [?[, name_ast, ", ", convert_to_javascript_module_body_ast(env, value), ?]]
+      [:incomplete, type, args, already_complete] ->
+        already_complete_args_ast =
+          Enum.map(already_complete, &convert_to_javascript_module_body_ast(env, &1))
+          |> Enum.intersperse(", ")
+          |> case do
+            [] -> []
+            list -> [list, ", "]
+          end
+        args_ast =
+          Enum.with_index(args)
+          |> Enum.map(fn{_type, counter} -> "var_#{counter}" end)
+          |> Enum.intersperse(", ")
+        [
+          "function ", to_string(name), ?(, args_ast, "){return",
+          case type do
+            :integer ->
+              [
+                ?[, to_string(name), ", ",
+                already_complete_args_ast, args_ast, ?]
+              ]
+            :tuple ->
+              [
+                ?[, to_string(name), ", ",
+                already_complete_args_ast, args_ast, ?]
+              ]
+          end,
+          ";}",
+        ]
+    end
   end
   # An unapplied enumeration head, make an anonymous function to hold it
   defp convert_to_javascript_module_body_ast(_env, {:enumeration_head, _meta, [name, _apply_type]}) do

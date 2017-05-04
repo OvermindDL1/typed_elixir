@@ -210,6 +210,18 @@ defmodule TypedElixir.Type do
 
 
 
+  defmodule Tuple do
+    # :elements should be [types]
+    defstruct [:elements, :meta]
+    def new(env, elements, meta \\ []) when is_list(elements) and is_list(meta) do
+      meta = Enum.into(meta, %{})
+      type = %Tuple{elements: elements, meta: meta}
+      {env, type}
+    end
+  end
+
+
+
 
   defmodule Record do
     # :labels should be [{atom_Label, type}]
@@ -351,6 +363,11 @@ defmodule TypedElixir.Type do
   def generify_unbound(env, %Func{args_types: args_types}) do
     HMEnv.map_env(env, args_types, &generify_unbound/2)
   end
+  def generify_unbound(env, %Record{labels: labels}) do
+    HMEnv.map_env(env, labels, fn(env, {_name, type}) ->
+      generify_unbound(env, type)
+    end)
+  end
   def generify_unbound(env, %Const{} = type), do: {env, type}
   def generify_unbound(_env, type) do
     throw {:TODO, :generify_unbound_unhandled, type}
@@ -362,6 +379,7 @@ defmodule TypedElixir.Type do
   # Resolve a type to a type
   def resolve_types!(env, fromType, intoType) do
     # inspect {:RESOLVERINATING, env, fromType, intoType}
+    HMEnv.debug(:initialize, env, :resolving)
     type = resolve_types(env, fromType, intoType)
     if Exception.exception?(type) do
       raise type
@@ -372,50 +390,114 @@ defmodule TypedElixir.Type do
 
 
   def resolve_types(env, from, into) do
+    {from, into} |> HMEnv.debug(env, :resolving, :start)
     {env, fromType} = get_type_or_ptr_type(env, from)
     {env, intoType} = get_type_or_ptr_type(env, into)
-    resolve_types_nolinks(env, from, fromType, intoType)
+    {fromType, intoType} |> HMEnv.debug(env, :resolving, :post)
+    {env, type} = resolve_types_nolinks(env, from, fromType, intoType)
+    type |> HMEnv.debug(env, :resolving, :end)
+    {env, type}
+  end
+
+
+  defp resolve_types(env, _baseFrom, %Ptr{}=from, into) do
+    {env, fromType} = get_type_or_ptr_type(env, from)
+    {env, intoType} = get_type_or_ptr_type(env, into)
+    {env, type} = resolve_types_nolinks(env, from, fromType, intoType)
+    {env, type}
+  end
+  defp resolve_types(env, baseFrom, from, into) do
+    {env, fromType} = get_type_or_ptr_type(env, from)
+    {env, intoType} = get_type_or_ptr_type(env, into)
+    {env, type} = resolve_types_nolinks(env, baseFrom, fromType, intoType)
+    {env, type}
   end
 
 
   defp resolve_types_nolinks(env, from, fromType, intoType)
-  defp resolve_types_nolinks(env, _from, fromType, %Ptr.Unbound{}=_intoType), do: {env, fromType} # Everything goes in to an Unbound
-  defp resolve_types_nolinks(env, %Ptr{}=ptr, %Ptr.Unbound{}, intoType) do # Can also refine an unbound too
-    env = Ptr.set(env, ptr, intoType)
-    {env, ptr}
-  end
   defp resolve_types_nolinks(env, _from, type, type), do: {env, type}
   defp resolve_types_nolinks(env, _from, %Const{const: const_type} = type, %Const{const: const_type}) do
     # TODO:  Verify the metas too...
     {env, type}
   end
-  defp resolve_types_nolinks(env, _from, fromType, %Ptr.Generic{named: false}=_intoType), do: {env, fromType} # Everything goes out to an unnamed generic too (good luck recovering it)
-  defp resolve_types_nolinks(env, _from, fromType, %Ptr.Generic{named: true}=_intoType), do: {env, fromType} # TODO:  Everything also goes in to a named generic, buuuut.....
+  defp resolve_types_nolinks(env, _from, fromType, %Ptr.Unbound{}=_intoType), do: {env, fromType} # Everything goes in to an Unbound
+  defp resolve_types_nolinks(env, %Ptr{}=ptr, %Ptr.Unbound{}, intoType) do # Can also refine an unbound too
+    env = Ptr.set(env, ptr, intoType)
+    {env, ptr}
+  end
+  defp resolve_types_nolinks(env, from, fromType, %Ptr.Generic{id: id, named: _named}=intoType) do
+    # key = {:generic_id, id}
+    # IO.inspect(id, label: :bleep)
+    # case HMEnv.get_type(env, key) do
+    #   nil ->
+    #     env = HMEnv.push_type(env, key, fromType)
+    #     IO.inspect(id, label: :bloop)
+    #     {env, fromType}
+    #   type ->
+    #     resolve_types(env, from, fromType, type)
+    # end
+    key = {:generic_id, id}
+    case HMEnv.get_type(env, key) do
+      nil ->
+        # throw {:BLARGH, id, fromType, Map.keys(env.types)}
+        # IO.inspect(id, label: :blorpo)
+        {env, intoType}
+      intoType ->
+        resolve_types(env, from, intoType, fromType)
+    end
+  end
+  defp resolve_types_nolinks(env, from, %Ptr.Generic{id: id, named: _named}=_fromType, intoType) do
+    # key = {:generic_id, id}
+    # case HMEnv.get_type(env, key) do
+    #   nil ->
+    #     # throw {:BLARGH, id, intoType, Map.keys(env.types)}
+    #     IO.inspect(id, label: :blorpo)
+    #     {env, nil}
+    #   fromType ->
+    #     resolve_types(env, from, fromType, intoType)
+    # end
+    key = {:generic_id, id}
+    # IO.inspect(id, label: :bleep)
+    case HMEnv.get_type(env, key) do
+      nil ->
+        env = HMEnv.push_type(env, key, intoType)
+        # IO.inspect(id, label: :bloop)
+        {env, intoType}
+      type ->
+        resolve_types(env, from, intoType, type)
+    end
+  end
+  # defp resolve_types_nolinks(env, _from, fromType, %Ptr.Generic{named: false}=_intoType), do: {env, fromType} # Everything goes out to an unnamed generic too (good luck recovering it)
+  # defp resolve_types_nolinks(env, _from, fromType, %Ptr.Generic{named: true}=_intoType), do: {env, fromType} # TODO:  Everything also goes in to a named generic, buuuut.....
   # Checking if an applied type matches the other type
   defp resolve_types_nolinks(env, _from, %App{type: type}, %App{type: type}), do: {env, type}
-  defp resolve_types_nolinks(env, _from, %App{type: fromType}, intoType) do
-    resolve_types(env, fromType, intoType)
+  defp resolve_types_nolinks(env, from, %App{type: fromType}, intoType) do
+    resolve_types(env, from, fromType, intoType)
     # {env, fromType} = get_type_or_ptr_type(env, fromType)
     # resolve_types_nolinks(env, fromType, intoType)
   end
-  defp resolve_types_nolinks(env, _from, fromType, %App{type: intoType}) do
-    resolve_types(env, fromType, intoType)
+  defp resolve_types_nolinks(env, from, fromType, %App{type: intoType}) do
+    resolve_types(env, from, fromType, intoType)
     # {env, intoType} = get_type_or_ptr_type(env, intoType)
     # resolve_types_nolinks(env, fromType, intoType)
   end
-  defp resolve_types_nolinks(env, _from, %Record{labels: fromLabels} = type, %Record{labels: toLabels}) do
+  defp resolve_types_nolinks(env, from, %Record{labels: fromLabels} = type, %Record{labels: toLabels}) do
     fromLabels = Enum.sort(fromLabels)
     toLabels = Enum.sort(toLabels)
     if length(fromLabels) != length(toLabels), do: throw {:NO_TYPE_RESOLUTION, :RECORD_LENGTH_DOES_NOT_MATCH, Keyword.keys(fromLabels), Keyword.keys(toLabels)}
     {env, _labels} =
       HMEnv.zipmap_env(env, fromLabels, toLabels, fn
         (env, {label, ltype}, {label, ltype}) -> {env, ltype}
-        (env, {label, fromType}, {label, toType}) -> resolve_types(env, fromType, toType)
+        (env, {label, fromType}, {label, toType}) -> resolve_types(env, from, fromType, toType)
         (env, {fromLabel, _fromType}, {toLabel, _toType}) -> throw {:NO_TYPE_RESOLUTION, :RECORD_LABEL_MISMATCH, if(fromLabel<toLabel, do: fromLabel, else: toLabel), :EXPECTED, if(fromLabel<toLabel, do: toLabel, else: fromLabel)}
         # (_env, {label, _}, _) -> throw {:NO_TYPE_RESOLUTION, :RECORD_FROM, label}
         # (_env, _, {label, _}) -> throw {:NO_TYPE_RESOLUTION, :RECORD_TO, label}
       end)
     {env, type}
+  end
+  defp resolve_types_nolinks(env, _from, %Tuple{elements: fromElements} = type, %Tuple{elements: toElements}) when length(fromElements) === length(toElements) do
+    {env, elements} = HMEnv.zipmap_env(env, fromElements, toElements, &resolve_types/3)
+    {env, %{type | elements: elements}}
   end
   # Keep TypePtr handling last
   # def resolve_types_nolinks(env, from, %Ptr{ptr: fromPtr}=from, %Ptr{ptr: intoPtr}=into) do
@@ -458,6 +540,15 @@ defmodule TypedElixir.Type do
     # {env, from} = get_type_or_ptr_type(env, fromType)
     # {_env, into} = get_type_or_ptr_type(env, intoType)
     throw {:NO_TYPE_RESOLUTION, from, fromType, intoType}
+  end
+
+
+  def get_generic_bound(env, %Ptr.Generic{id: id}=gen) do
+    key = {:generic_id, id}
+    case HMEnv.get_type(env, key) do
+      nil -> gen
+      result -> result
+    end
   end
 
 
