@@ -5,8 +5,9 @@ defmodule TypedElixir.HMEnv do
 
   def debug?(opts, section)
   def debug?(%{user: opts}, section), do: debug?(opts, section)
+  def debug?(bool, _section) when is_boolean(bool), do: bool
   def debug?(opts, section) do
-    debugOpts = opts[:debug] || []
+    debugOpts = opts[:debug] || opts
     true === debugOpts || section in debugOpts || :all in debugOpts
   end
 
@@ -15,12 +16,28 @@ defmodule TypedElixir.HMEnv do
   def debug(val, opts, section, prefix) do
     # debugOpts = opts[:debug] || []
     isEnabled = debug?(opts, section) # true === debugOpts || section in debugOpts || :all in debugOpts
+    colors =
+      case debug?(opts, :color) do
+        true ->
+          [
+            number: :cyan,
+            atom: :blue,
+            tuple: :green,
+            map: :magenta,
+            regex: :red,
+            list: :yellow,
+            reset: :white,
+          ]
+        _ -> []
+      end
     if isEnabled do
       if prefix do
-        IO.inspect({section, prefix, val})
+        IO.inspect(val, label: "#{section}:#{prefix}", syntax_colors: colors, width: 110, pretty: true)
+        Process.sleep(5)
         val
       else
-        IO.inspect({section, val})
+        IO.inspect(val, label: "#{section}", syntax_colors: colors, width: 110, pretty: true)
+        Process.sleep(5)
         val
       end
     else

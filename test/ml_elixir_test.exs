@@ -7,7 +7,6 @@ defmodule MLElixirTest do
   doctest MLElixir
   import MLElixir
 
-
   defmlmodule MLModuleTest_Specific, debug: [:_resolving, :_module_pretty_output] do
     type t = MLModuleTest.type_definition
     type Specific = MLModuleTest_Generalized.(t: float)
@@ -67,6 +66,42 @@ defmodule MLElixirTest do
     def testering25 = tuple_enum2 42, 6.28
     def testering26 = testering0
     def testering27 = tuple_recurception {42, 6.28}
+
+    # Functions
+    def testering_func0 = 42
+    def testering_func1(a, b, c) | {integer, integer, integer} = {a, b, c}
+    def testering_func2(a | integer, b | integer, c | integer) = {a, b, c}
+    def testering_func3(a | integer, b | integer, c | integer) | {integer, integer, integer} = {a, b, c}
+    def testering_func4 = testering_func0
+    def testering_func5 = testering_func1 1, 2, 3
+    def testering_func6(a, b, c) = testering_func1 a, b, c
+    def testering_func7(a) = testering_func1 1, a, 3
+    def testering_func8 = testering_func1
+    def testering_func9(a) = testering_func1 a
+    def testering_func10(a) = testering_func1 1, a
+    def testering_func11(a) = testering_func1 a, 2
+    def testering_func12(a, b) = testering_func1 a, b
+    def testering_func13(a) = testering_func1 a, _, _
+    def testering_func14(a) = testering_func1 _, a, _
+    def testering_func15(a) = testering_func1 _, _, a
+    def testering_func16(a) = testering_func1 _, a
+    def testering_func17(a) = testering_func1 a, _0, _1
+    def testering_func18(a) = testering_func1 a, _1, _0
+    def testering_func19(a) = testering_func1 a, _1
+    def testering_func20 = testering_func8 1, 2, 3
+    def testering_func21 = testering_func9 1, 2, 3
+    def testering_func22 = testering_func12 1, 2, 3
+    def testering_func23 = testering_func9 1
+    def testering_func24 = testering_func9 1, _
+    def testering_func25 = testering_func9 _, 2
+    def testering_func26a(a, b, c, d, e) = {a, b, c, d, e}
+    def testering_func26b(b) = testering_func26a 1, b
+    def testering_func26c(c) = testering_func26b 2, c
+    def testering_func26d(d) = testering_func26c 3, d
+    def testering_func26(e) = testering_func26d 4, e
+    def testering_func27(e) = testering_func26a _, _, _, _, e
+    def testering_func28(e) = testering_func26b _, _, _, e
+    def testering_func29(e) = testering_func26a _3, _2, _1, _0, e
 
     # Records (I.E. Erlang/Elixir atom() keyed maps, like structs)
     type record0 = %{} # Empty record
@@ -178,6 +213,38 @@ defmodule MLElixirTest do
     assert MLModuleTest_Specific.testering25 === {:tuple_enum2, 42, 6.28}
     assert MLModuleTest_Specific.testering26 === 42
     assert MLModuleTest_Specific.testering27 === {:tuple_recurception, {42, 6.28}}
+
+    # Functions
+    assert MLModuleTest_Specific.testering_func0() === 42
+    assert MLModuleTest_Specific.testering_func1(1, 2, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func2(1, 2, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func3(1, 2, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func4() === 42
+    assert MLModuleTest_Specific.testering_func5() === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func6(1, 2, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func7(2) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func8().(1, 2, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func9(1).(2, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func10(2).(3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func11(1).(3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func12(1, 2).(3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func13(1).(2, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func14(2).(1, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func15(3).(1, 2) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func16(2).(1, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func17(1).(2, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func18(1).(3, 2) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func19(1).(:unused, 2, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func20() === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func21() === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func22() === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func23().(2, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func24().(2, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func25().(1, 3) === {1, 2, 3}
+    assert MLModuleTest_Specific.testering_func26(5) === {1, 2, 3, 4, 5}
+    assert MLModuleTest_Specific.testering_func27(5).(1, 2, 3, 4) === {1, 2, 3, 4, 5}
+    assert MLModuleTest_Specific.testering_func28(5).(2, 3, 4) === {1, 2, 3, 4, 5}
+    assert MLModuleTest_Specific.testering_func29(5).(4, 3, 2, 1) === {1, 2, 3, 4, 5}
 
     # Records
     assert MLModuleTest_Specific.testering_record0() === %{}

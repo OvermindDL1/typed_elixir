@@ -13,6 +13,7 @@ defmodule MLElixir do
 
   defmodule Key do
     def typename(name), do: {:typename, name}
+    def func(name), do: {:func, name}
     def func(name, arity), do: {:func, name, arity}
     def binding(name), do: {:binding, name}
     def generic(name), do: {:generic, name}
@@ -580,11 +581,13 @@ opts = Keyword.put(opts, :full_stack, true)
     {env, args_types} = HMEnv.map_env(env, args_ast, &parse_type_expression/2)
     args_count = length(args_types)
     func_key = Key.func(name, args_count)
+    func_key_global = Key.func(name)
     {env, {modules, func_name}} = parse_module_external_body(env, body_ast)
     {env, _scope} = HMEnv.pop_scope(env, :def)
     {env, args_types} = Type.generify_unbound(env, args_types)
     {env, func_type} = Type.Func.new(env, args_types, return_type, false, {modules, func_name, args_count})
     env = HMEnv.push_type(env, func_key, func_type)
+    env = HMEnv.push_type(env, func_key_global, func_type)
     call_type = {:external_call, [type: func_type], [{modules, func_name, args_count}]}
     env = add_call(env, name, call_type, func_type)
     ast = {:external, [type: func_type] ++ meta, [name, {modules, func_name, args_count}]}
@@ -670,7 +673,9 @@ opts = Keyword.put(opts, :full_stack, true)
     args_types = Enum.map(args, fn {_, meta, _} -> meta[:type] end)
     {env, inner_type} = Type.Func.new(env, args_types, return_type, false, nil)
     func_key = Key.func(name, length(args))
+    func_key_global = Key.func(name)
     env = HMEnv.push_type(env, func_key, inner_type)
+    env = HMEnv.push_type(env, func_key_global, inner_type)
     {env, body} = parse_ml_expression(env, body_expr)
     {_, body_meta, _} = body
     body_type = body_meta[:type]
@@ -691,6 +696,7 @@ opts = Keyword.put(opts, :full_stack, true)
     {env, args_types} = Type.generify_unbound(env, args_types)
     {env, func_type} = Type.Func.new(env, args_types, return_type, false, nil)
     env = HMEnv.push_type(env, func_key, func_type)
+    env = HMEnv.push_type(env, func_key_global, func_type)
     ast = {:def, [type: func_type] ++ meta, [name, args, body]}
     {env, ast}
   end
@@ -760,11 +766,23 @@ opts = Keyword.put(opts, :full_stack, true)
         case HMEnv.get_type(env, key) do
           nil ->
             # Else check if there is a 0-arity function with this name
-            key = Key.func(name, 0)
+            key = Key.func(name)
             case HMEnv.get_type(env, key) do
               nil -> throw {:BINDING_NOT_FOUND, name}
-              %Type.Func{return_type: return_type} ->
+              %Type.Func{args_types: [], return_type: return_type} -> # Call it, 0-args
                 ast = {:call, [type: return_type]++meta, [{name, 0}, []]}
+                {env, ast}
+              %Type.Func{args_types: args_types, return_type: return_type} = type -> # Curry to pass an anonymous function
+                args_types_length = length(args_types)
+                {env, args_ast} =
+                  HMEnv.zipmap_env(env, tl(Enum.into(-1..(args_types_length-1), [])), args_types, fn
+                    (env, idx, type) ->
+                      {env, var_id} = HMEnv.new_counter(env, :vars)
+                      ast = {:binding, [type: type]++meta, [String.to_atom("$var_#{idx}_#{var_id}")]}
+                      {env, ast}
+                  end)
+                body_ast = {:call, [type: return_type]++meta, [{name, args_types_length}, args_ast]}
+                ast = {:def, [type: type]++meta, [nil, args_ast, body_ast]}
                 {env, ast}
             end
           {nil, %Type.GADT{heads: heads}=type} ->
@@ -909,19 +927,230 @@ opts = Keyword.put(opts, :full_stack, true)
     key = Key.call(name)
     case HMEnv.get_type(env, key) do
       nil ->
-        key = Key.func(name, length(args))
+        key = Key.func(name)
+        arg_mapper =
+          fn
+            (env, apply_type, {:_, _, scope}) when is_atom(scope) ->
+              {env, {:new_binding, [type: apply_type]++meta, []}}
+            (env, apply_type, {binding_name, _, scope}=arg) when is_atom(scope) ->
+              case Atom.to_string(binding_name) do
+                "_"<>test_name ->
+                  case Integer.parse(test_name) do
+                    {num, ""} when num>=0 and num<128 -> {env, {:new_binding, [type: apply_type]++meta, [num]}}
+                    _ ->
+                      {env, {_, arg_meta, _} = arg_ast} = parse_ml_expression(env, arg)
+                      arg_type = arg_meta[:type]
+                      {env, _resolved_type} = Type.resolve_types!(env, arg_type, apply_type)
+                      {env, arg_ast}
+                  end
+                _ ->
+                  {env, {_, arg_meta, _} = arg_ast} = parse_ml_expression(env, arg)
+                  arg_type = arg_meta[:type]
+                  {env, _resolved_type} = Type.resolve_types!(env, arg_type, apply_type)
+                  {env, arg_ast}
+              end
+            (env, apply_type, arg) ->
+              {env, {_, arg_meta, _} = arg_ast} = parse_ml_expression(env, arg)
+              arg_type = arg_meta[:type]
+              {env, _resolved_type} = Type.resolve_types!(env, arg_type, apply_type)
+              {env, arg_ast}
+          end
+        args_ast_reducer =
+          fn
+            ({:new_binding, m, []}, {env, args, calls, c}) ->
+              {env, var_id} = HMEnv.new_counter(env, :vars)
+              ast = {:binding, m, [String.to_atom("$var_#{c}_#{var_id}")]}
+              {env, args} =
+                if length(args) <= c do
+                  {env, unbound} = Type.Ptr.Unbound.new_ptr(env)
+                  {env, args++List.duplicate({:binding, [type: unbound], [:_]}, c-length(args)+1)}
+                else
+                  {env, args}
+                end
+              args = List.replace_at(args, c, ast)
+              {env, args, calls++[ast], c+1}
+            ({:new_binding, m, [c]}, {env, args, calls, _c}) ->
+              {env, var_id} = HMEnv.new_counter(env, :vars)
+              ast = {:binding, m, [String.to_atom("$var_#{c}_#{var_id}")]}
+              {env, args} =
+                if length(args) <= c do
+                  {env, unbound} = Type.Ptr.Unbound.new_ptr(env)
+                  {env, args++List.duplicate({:binding, [type: unbound], [:_]}, c-length(args)+1)}
+                else
+                  {env, args}
+                end
+              args = List.replace_at(args, c, ast)
+              {env, args, calls++[ast], c+1}
+            (arg_ast, {env, args, calls, c}) ->
+              {env, args, calls++[arg_ast], c}
+          end
         case HMEnv.get_type(env, key) do
           nil -> throw {:CALL_NOT_FOUND, name, args, env.types}
-          %Type.Func{args_types: args_types, return_type: return_type} ->
-            {env, args_ast} = HMEnv.zipmap_env(env, args_types, args, fn
-              (env, apply_type, arg) ->
-                {env, {_, arg_meta, _} = arg_ast} = parse_ml_expression(env, arg)
-                arg_type = arg_meta[:type]
-                {env, _resolved_type} = Type.resolve_types!(env, arg_type, apply_type)
-                {env, arg_ast}
+          # %Type.Func{args_types: args_types, return_type: return_type} = type when length(args_types) === length(args) -> # Call or itemized curry
+          #   {env, args_ast} = HMEnv.zipmap_env(env, args_types, args, arg_mapper)
+          #   case Enum.reduce(args_ast, {env, [], [], 0}, args_ast_reducer) do
+          #     {env, [], calls, _} ->
+          #       ast = {:call, [type: return_type] ++ meta, [{name, length(args)}, calls]}
+          #       {env, ast}
+          #     {env, call_args, calls, _} ->
+          #       body_ast = {:call, [type: return_type]++meta, [{name, length(args)}, calls]}
+          #       args_types = Enum.map(call_args, &(elem(&1, 1)[:type]))
+          #       {env, args_types} = Type.generify_unbound(env, args_types)
+          #       type = %{type | args_types: args_types}
+          #       ast = {:def, [type: type]++meta, [nil, call_args, body_ast]}
+          #       {env, ast}
+          #   end
+          # %Type.Func{args_types: args_types, return_type: return_type} = type when length(args_types) > length(args) -> # Anonymous curry
+          #   args_length = length(args)
+          #   {used_args, rest_args} = Enum.split(args_types, args_length)
+          #   rest_length = length(rest_args)
+          #   {env, args_ast} = HMEnv.zipmap_env(env, used_args, args, arg_mapper)
+          #   {env, call_args, calls, _} = Enum.reduce(args_ast, {env, [], [], 0}, args_ast_reducer)
+          #   {env, rest_args_ast} =
+          #     HMEnv.zipmap_env(env, tl(Enum.into(-1..(rest_length-1), [])), rest_args, fn
+          #       (env, idx, type) ->
+          #         {env, var_id} = HMEnv.new_counter(env, :vars)
+          #         ast = {:binding, [type: type]++meta, [String.to_atom("$var__#{idx}_#{var_id}")]}
+          #         {env, ast}
+          #     end)
+          #   body_ast = {:call, [type: return_type]++meta, [{name, length(args_types)}, calls++rest_args_ast]}
+          #   args_types = Enum.map(call_args, &(elem(&1, 1)[:type]))
+          #   {env, args_types} = Type.generify_unbound(env, args_types)
+          #   type = %{type | args_types: args_types++rest_args}
+          #   ast = {:def, [type: type]++meta, [nil, call_args++rest_args_ast, body_ast]}
+          #   {env, ast}
+          %Type.Func{} = type -> #when length(args_types) < length(args) -> # call function, then call the output of that function, etc..
+            # args_length = length(args)
+            {env, funcs_types} = Type.Func.get_func_return_list(env, type)
+            {b, funcs_types} = Enum.reduce(funcs_types, {args, []}, fn # Prune the funcs_types to only fit the argument count
+              (%Type.Func{args_types: args_types}=type, {args, out}) when length(args_types) < length(args) -> {Enum.drop(args, length(args_types)), out++[type]}
+              (_type, {[], out}) -> {[], out}
+              (type, {_args, out}) -> {[], out++[type]}
             end)
-            ast = {:call, [type: return_type] ++ meta, [{name, length(args)}, args_ast]}
-            {env, ast}
+            funcs_all_args_types = Enum.map(funcs_types, &Map.get(&1, :args_types)) |> List.foldr([], &Kernel.++/2)
+            args =
+              if length(args) < length(funcs_all_args_types) do
+                args ++ List.duplicate({:_, [], nil}, length(funcs_all_args_types)-length(args))
+              else
+                args
+              end
+            {args, unused_args} = Enum.split(args, length(funcs_all_args_types))
+            # {funcs_all_args_types, _unused_funcs_all_args_types} = Enum.split(funcs_all_args_types, args_length)
+            # funcs_all_args_types = Enum.take(funcs_all_args_types, args_length)
+            {funcs_all_args_types, args}
+            {env, args_ast} = HMEnv.zipmap_env(env, funcs_all_args_types, args, arg_mapper)
+            {env, return, [nil], _main_args, _returning_type} =
+              Enum.reduce(args_ast++[nil], {env, nil, [], [], type}, fn
+                (argument, {env, prior_ast, args, main_args, %Type.Func{args_types: args_types, return_type: return_type}=type}) when length(args_types) === length(args) -> # Call or itemized curry
+                  args_ast = :lists.reverse(args)
+                  name_ast =
+                    case prior_ast do
+                      nil -> {name, length(args)}
+                      prior_ast -> {prior_ast}
+                    end
+                  {env, ast, more_args} =
+                    case Enum.reduce(args_ast, {env, [], [], 0}, args_ast_reducer) do
+                      {env, [], calls, _} ->
+                        ast = {:call, [type: return_type] ++ meta, [name_ast, calls]}
+                        {env, ast, []}
+                      {env, call_args, calls, _} ->
+                        body_ast = {:call, [type: return_type]++meta, [name_ast, calls]}
+                        case argument do
+                          nil ->
+                            args_types = Enum.map(call_args, &(elem(&1, 1)[:type]))
+                            {env, args_types} = Type.generify_unbound(env, args_types)
+                            type = %{type | args_types: args_types}
+                            ast = {:def, [type: type]++meta, [nil, main_args++call_args, body_ast]}# |> debug(name===:testering_func26d, name) # |>IO.inspect(label: name, syntax_colors: [number: :red, atom: :blue, tuple: :green, map: :yellow], width: 110, pretty: true)
+                            {env, ast, []}
+                          _ -> {env, body_ast, call_args}
+                        end
+                    end
+                  {env, ast, [argument], main_args++more_args, return_type}
+                # (nil, {_env, prior_ast, args, main_args, %Type.Func{args_types: args_types, return_type: return_type}=_type}) when length(args) < length(args_types) -> # Short curry
+                #   args_ast = :lists.reverse(args)
+                #   name_ast =
+                #     case prior_ast do
+                #       nil -> {name, length(args_types)}
+                #       prior_ast -> {prior_ast}
+                #     end
+                #   args_length = length(args_ast)
+                #   {_used_args, rest_args} = Enum.split(args_types, args_length)
+                #   rest_length = length(rest_args)
+                #   {env, call_args, calls, _} = Enum.reduce(args_ast, {env, [], [], 0}, args_ast_reducer)
+                #   {env, rest_args_ast} =
+                #     HMEnv.zipmap_env(env, tl(Enum.into(-1..(rest_length-1), [])), rest_args, fn
+                #       (env, idx, type) ->
+                #         {env, var_id} = HMEnv.new_counter(env, :vars)
+                #         ast = {:binding, [type: type]++meta, [String.to_atom("$var__#{idx}_#{var_id}")]}
+                #         {env, ast}
+                #     end)
+                #   body_ast = {:call, [type: return_type]++meta, [name_ast, calls++rest_args_ast]}
+                #   args_types = Enum.map(call_args, &(elem(&1, 1)[:type]))
+                #   {env, args_types} = Type.generify_unbound(env, args_types)
+                #   type = %{type | args_types: args_types++rest_args}
+                #   ast = {:def, [type: type]++meta, [nil, call_args++rest_args_ast, body_ast]}
+                #   {env, ast, [nil], main_args, return_type}
+                (argument, {env, prior_ast, args, main_args, %Type.Func{args_types: args_types}=type}) when length(args) < length(args_types) -> # Not enough to call yet, add argument and reduce
+                  {env, prior_ast, [argument | args], main_args, type}
+                (nil, {env, ast, [nil], main_args, return_type}) ->
+                  {env, ast, [nil], main_args, return_type}
+              end)
+              # List.foldr([nil]++:lists.reverse(args_ast), {env, nil, [], type}, fn
+              # Enum.reduce(args_ast++[nil], {env, nil, [], type}, fn
+              #   (argument, {env, prior_ast, args, %Type.Func{args_types: args_types, return_type: return_type}=type}) when length(args_types) === length(args) -> # Call or itemized curry
+              #     args_ast = :lists.reverse(args)
+              #     name_ast =
+              #       case prior_ast do
+              #         nil -> {name, length(args)}
+              #         prior_ast -> {prior_ast}
+              #       end
+              #     {env, ast} =
+              #       case Enum.reduce(args_ast, {env, [], [], 0}, args_ast_reducer) do
+              #         {env, [], calls, _} ->
+              #           ast = {:call, [type: return_type] ++ meta, [name_ast, calls]}
+              #           {env, ast}
+              #         {env, call_args, calls, _} ->
+              #           body_ast = {:call, [type: return_type]++meta, [name_ast, calls]}
+              #           args_types = Enum.map(call_args, &(elem(&1, 1)[:type]))
+              #           {env, args_types} = Type.generify_unbound(env, args_types)
+              #           type = %{type | args_types: args_types}
+              #           ast = {:def, [type: type]++meta, [nil, call_args, body_ast]}
+              #           {env, ast}
+              #       end
+              #     {env, ast, [argument], return_type}
+              #   (nil, {_env, prior_ast, args,  %Type.Func{args_types: args_types, return_type: return_type}=_type}) when length(args) < length(args_types) -> # Short curry
+              #     args_ast = :lists.reverse(args)
+              #     name_ast =
+              #       case prior_ast do
+              #         nil -> {name, length(args_types)}
+              #         prior_ast -> {prior_ast}
+              #       end
+              #     args_length = length(args_ast)
+              #     {_used_args, rest_args} = Enum.split(args_types, args_length)
+              #     rest_length = length(rest_args)
+              #     {env, call_args, calls, _} = Enum.reduce(args_ast, {env, [], [], 0}, args_ast_reducer)
+              #     {env, rest_args_ast} =
+              #       HMEnv.zipmap_env(env, tl(Enum.into(-1..(rest_length-1), [])), rest_args, fn
+              #         (env, idx, type) ->
+              #           {env, var_id} = HMEnv.new_counter(env, :vars)
+              #           ast = {:binding, [type: type]++meta, [String.to_atom("$var__#{idx}_#{var_id}")]}
+              #           {env, ast}
+              #       end)
+              #     body_ast = {:call, [type: return_type]++meta, [name_ast, calls++rest_args_ast]}
+              #     args_types = Enum.map(call_args, &(elem(&1, 1)[:type]))
+              #     {env, args_types} = Type.generify_unbound(env, args_types)
+              #     type = %{type | args_types: args_types++rest_args}
+              #     ast = {:def, [type: type]++meta, [nil, call_args++rest_args_ast, body_ast]}
+              #     {env, ast, [nil], return_type}
+              #   (argument, {env, prior_ast, args, %Type.Func{args_types: args_types}=type}) when length(args) < length(args_types) -> # Not enough to call yet, add argument and reduce
+              #     {env, prior_ast, [argument | args], type}
+              #   (nil, {env, ast, [nil], return_type}) ->
+              #     {env, ast, [nil], return_type}
+              # end)
+            case unused_args do
+              [] -> {env, return}
+              unused_args -> throw {:attempted_to_pass_args_to_non_function, name, unused_args}
+            end
         end
       {{:const, const_meta, value}, type} when args === [] ->
         ast = {:const, [type: type] ++ const_meta ++ meta, value}
@@ -1038,12 +1267,11 @@ opts = Keyword.put(opts, :full_stack, true)
     bindings =
       args_types
       |> Enum.with_index()
-      |> Enum.map(&{:binding, [type: elem(&1,0)], [String.to_atom("var_#{elem(&1,1)}")]})
+      |> Enum.map(&{:binding, [type: elem(&1,0)], [String.to_atom("$var_#{elem(&1,1)}")]})
     convert_to_elixir_module_body_ast(env, {:def, external_meta, [name, bindings, {:call, external_meta, [{modules, func_name, arg_count}, bindings]}]})
   end
   defp convert_to_elixir_module_body_ast(env, {:def, def_meta, [name, args, body_expr]}) when is_atom(name) and is_list(args) and not is_list(body_expr) do
     args_ast = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
-    name_ast = {name, [], args_ast}
     guards_ast =
       if env.user[:disable_guards] do
         []
@@ -1054,12 +1282,12 @@ opts = Keyword.put(opts, :full_stack, true)
             case m[:type] do
               nil -> throw {:TODO, :AST_WITHOUT_TYPE, binding_ast}
               type ->
-                {env, bound_type} =
-                  Type.get_type_or_ptr_type(env, type)
-                  |> case do
-                    # {env, %Type.Ptr.Generic{}=gen} -> {env, Type.get_generic_bound(env, gen)}
-                    result -> result
-                  end
+                # {env, bound_type} =
+                #   Type.get_type_or_ptr_type(env, type)
+                #   |> case do
+                #     # {env, %Type.Ptr.Generic{}=gen} -> {env, Type.get_generic_bound(env, gen)}
+                #     result -> result
+                #   end
                 case Type.get_type_or_ptr_type(env, type) do # TODO:  Type the guards?  Probably no point...
                   {_env, %Type.Ptr.Generic{}} -> []
                   {_env, %Type.Const{const: :integer}} -> {:is_integer, m, [bound_ast]}
@@ -1081,17 +1309,43 @@ opts = Keyword.put(opts, :full_stack, true)
         end)
         |> List.flatten()
       end
-    when_ast =
-      case guards_ast do
-        [] -> name_ast
-        guards -> # 'and' them all together...
-          guards = Enum.reduce(guards, fn(left, right) -> {:and, [], [left, right]} end)
-          {:when, [], [name_ast, guards]}
-      end
     body_ast = convert_to_elixir_module_body_ast(env, body_expr)
-    ast = {:def, def_meta, [when_ast, [do: body_ast]]}
-    ast
+    case name do
+      nil -> nil
+        when_ast =
+          case guards_ast do
+            [] -> args_ast
+            guards -> # 'and' them all together...
+              guards = Enum.reduce(guards, fn(left, right) -> {:and, [], [left, right]} end)
+              [{:when, [], args_ast++[guards]}]
+          end
+        ast = {:fn, def_meta, [ {:->, [], [when_ast, body_ast]} ]}
+        ast
+      name ->
+        name_ast = {name, [], args_ast}
+        when_ast =
+          case guards_ast do
+            [] -> name_ast
+            guards -> # 'and' them all together...
+              guards = Enum.reduce(guards, fn(left, right) -> {:and, [], [left, right]} end)
+              {:when, [], [name_ast, guards]}
+          end
+        ast = {:def, def_meta, [when_ast, [do: body_ast]]}
+        ast
+    end
   end
+  # defp convert_to_elixir_module_body_ast(env, {:curry, meta, [{func_name, arg_count}, args]}) do
+  #   %Type.Func{args_types: args_types} = meta[:type]
+  #   {head_ast, guard_ast, args_ast} =
+  #     Enum.zip(args, args_types)
+  #     Enum.reduce({[], [], []}, fn
+  #       ({nil, type}, {head, guard, args}) ->
+  #         head = head ++
+  #         {head, args}
+  #       ({idx, type}, {head, guard, args}) when is_integer(idx) -> throw "Not handled yet 'idx'"
+  #       ({ast, type}, {head, guard, args}) -> throw "Not handled yet 'ast'"
+  #     end)
+  # end
   defp convert_to_elixir_module_body_ast(env, {:call, meta, [{modules, func_name, arg_count}, args]}) do
     ^arg_count = length(args)
     args_ast = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
@@ -1101,6 +1355,11 @@ opts = Keyword.put(opts, :full_stack, true)
     ^arg_count = length(args)
     args_ast = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
     {func_name, meta, args_ast}
+  end
+  defp convert_to_elixir_module_body_ast(env, {:call, meta, [{prior}, args]}) do
+    prior_ast = convert_to_elixir_module_body_ast(env, prior)
+    args_ast = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
+    {{:., [], [prior_ast]}, meta, args_ast}
   end
   defp convert_to_elixir_module_body_ast(_env, {:binding, meta, [name]}) when is_atom(name) do
     {name, meta, nil}
@@ -1139,7 +1398,7 @@ opts = Keyword.put(opts, :full_stack, true)
         already_complete_args_ast = Enum.map(already_complete, &convert_to_elixir_module_body_ast(env, &1))
         {args_ast, guards_ast, _counter} = Enum.reduce(args, {[], [], 0}, fn (v, {args, guards, counter}) ->
           arg =
-            Macro.var(String.to_atom("var_#{to_string(counter)}"), nil)
+            Macro.var(String.to_atom("$var_#{to_string(counter)}"), nil)
           guard =
             case v do
               %Type.Const{const: :float} -> quote(do: is_float(unquote(arg)))
@@ -1283,7 +1542,7 @@ opts = Keyword.put(opts, :full_stack, true)
           end
         args_ast =
           Enum.with_index(args)
-          |> Enum.map(fn{_type, counter} -> "var_#{counter}" end)
+          |> Enum.map(fn{_type, counter} -> "$var_#{counter}" end)
           |> Enum.intersperse(", ")
         [
           "function ", to_string(name), ?(, args_ast, "){return",

@@ -181,6 +181,13 @@ defmodule TypedElixir.Type do
       type = %Func{args_types: args_types, return_type: return_type, is_indirect: is_indirect, call: call, meta: meta}
       {env, type}
     end
+
+    def get_func_return_list(env, %Func{return_type: return_type} = func) do
+      {env, return_type} = TypedElixir.Type.get_resolved_type(env, return_type)
+      {env, return} = get_func_return_list(env, return_type)
+      {env, [func | return]}
+    end
+    def get_func_return_list(env, _type), do: {env, []}
   end
 
 
