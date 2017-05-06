@@ -488,6 +488,12 @@ defmodule TypedElixir.Type do
     # {env, intoType} = get_type_or_ptr_type(env, intoType)
     # resolve_types_nolinks(env, fromType, intoType)
   end
+  defp resolve_types_nolinks(env, _from, %Func{is_indirect: is_indirect, args_types: from_args_types, return_type: from_return_type, call: call} = type, %Func{is_indirect: is_indirect, args_types: to_args_types, return_type: to_return_type, call: call}) do
+    {env, args_types} = HMEnv.zipmap_env(env, from_args_types, to_args_types, &resolve_types/3)
+    {env, return_type} = resolve_types(env, from_return_type, to_return_type)
+    type = %{type | args_types: args_types, return_type: return_type}
+    {env, type}
+  end
   defp resolve_types_nolinks(env, from, %Record{labels: fromLabels} = type, %Record{labels: toLabels}) do
     fromLabels = Enum.sort(fromLabels)
     toLabels = Enum.sort(toLabels)

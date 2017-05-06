@@ -7,7 +7,7 @@ defmodule MLElixirTest do
   doctest MLElixir
   import MLElixir
 
-  defmlmodule MLModuleTest_Specific, debug: [:_resolving, :_module_pretty_output] do
+  defmlmodule MLModuleTest_Specific, debug: [:_resolving, :module_pretty_output] do
     type t = MLModuleTest.type_definition
     type Specific = MLModuleTest_Generalized.(t: float)
     type st = Specific.t
@@ -102,6 +102,9 @@ defmodule MLElixirTest do
     def testering_func27(e) = testering_func26a _, _, _, _, e
     def testering_func28(e) = testering_func26b _, _, _, e
     def testering_func29(e) = testering_func26a _3, _2, _1, _0, e
+    def testering_func30(f) = f(2)
+    def testering_func31(value, f) = f(value)
+    def testering_func32(value | integer, f) = f(value)
 
     # Records (I.E. Erlang/Elixir atom() keyed maps, like structs)
     type record0 = %{} # Empty record
@@ -156,6 +159,15 @@ defmodule MLElixirTest do
     def testering_ffi_addi_0 = addi(1, 2)
     def testering_ffi_addi_1(i) = addi(1, i)
     def testering_ffi_addi_2(a, b) = addi(a, b)
+
+    def value |> fun = fun(value)
+    # let value |> fun = fun(value) # Both work as always
+    def testering_op_pipe0 = 42 |> testering_tuple5
+    def identity(i) = i
+    def testering_op_pipe1(i) =
+      42
+      |> identity
+      |> testering_func1(1, _, i)
   end
 
   # defmlmodule MLModuleTest_Specific_Module | MLModuleTest.(t: int) do
@@ -245,6 +257,9 @@ defmodule MLElixirTest do
     assert MLModuleTest_Specific.testering_func27(5).(1, 2, 3, 4) === {1, 2, 3, 4, 5}
     assert MLModuleTest_Specific.testering_func28(5).(2, 3, 4) === {1, 2, 3, 4, 5}
     assert MLModuleTest_Specific.testering_func29(5).(4, 3, 2, 1) === {1, 2, 3, 4, 5}
+    assert MLModuleTest_Specific.testering_func30(fn x -> x + 1 end) === 3
+    assert MLModuleTest_Specific.testering_func31(21, fn x -> x * 2 end) === 42
+    assert MLModuleTest_Specific.testering_func32(21, fn x -> x * 2 end) === 42
 
     # Records
     assert MLModuleTest_Specific.testering_record0() === %{}
@@ -279,6 +294,15 @@ defmodule MLElixirTest do
     assert MLModuleTest_Specific.testering_ffi_addi_0() === 3
     assert MLModuleTest_Specific.testering_ffi_addi_1(3) === 4
     assert MLModuleTest_Specific.testering_ffi_addi_2(1, 2) === 3
+
+    # Operators
+    (fn ->
+      import Kernel, except: [|>: 2]
+      import MLModuleTest_Specific, only: [|>: 2]
+      assert (21 |> (&(&1*2))) === 42
+      assert MLModuleTest_Specific.testering_op_pipe0() === {42}
+      assert MLModuleTest_Specific.testering_op_pipe1(3) === {1, 42, 3}
+    end).()
   end
 
 

@@ -26,6 +26,7 @@ defmodule TypedElixir.HMEnv do
             map: :magenta,
             regex: :red,
             list: :yellow,
+            boolean: :yellow,
             reset: :white,
           ]
         _ -> []
