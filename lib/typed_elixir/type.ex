@@ -338,6 +338,11 @@ defmodule TypedElixir.Type do
     type = %{type | labels: typed_labels}
     callback.(env, type)
   end
+  def map_types(env, %Tuple{elements: elements} = type, _opts, callback) do
+    {env, typed_elements} = HMEnv.map_env(env, elements, callback)
+    type = %{type | elements: typed_elements}
+    callback.(env, type)
+  end
   def map_types(env, %Ptr{ptr: ptr} = type, opts, callback) do
     ptr =
       if :ptr_recurse in opts do
@@ -348,9 +353,9 @@ defmodule TypedElixir.Type do
     type = %{type | ptr: ptr}
     callback.(env, type)
   end
-  # def map_types(env, types, opts, callback) when is_list(types) do
-  #   throw Enum.map(types, &map_types(&1, callback))
-  # end
+  def map_types(_env, types, _opts, _callback) do
+    throw {:TODO, :unhandled_type, types}
+  end
 
 
 
@@ -374,6 +379,9 @@ defmodule TypedElixir.Type do
     HMEnv.map_env(env, labels, fn(env, {_name, type}) ->
       generify_unbound(env, type)
     end)
+  end
+  def generify_unbound(env, %Tuple{elements: elements}) do
+    HMEnv.map_env(env, elements, &generify_unbound/2)
   end
   def generify_unbound(env, %Const{} = type), do: {env, type}
   def generify_unbound(_env, type) do
@@ -488,7 +496,7 @@ defmodule TypedElixir.Type do
     # {env, intoType} = get_type_or_ptr_type(env, intoType)
     # resolve_types_nolinks(env, fromType, intoType)
   end
-  defp resolve_types_nolinks(env, _from, %Func{is_indirect: is_indirect, args_types: from_args_types, return_type: from_return_type, call: call} = type, %Func{is_indirect: is_indirect, args_types: to_args_types, return_type: to_return_type, call: call}) do
+  defp resolve_types_nolinks(env, _from, %Func{is_indirect: is_indirect, args_types: from_args_types, return_type: from_return_type, call: call} = type, %Func{is_indirect: is_indirect, args_types: to_args_types, return_type: to_return_type, call: call}) when length(from_args_types) === length(to_args_types) do
     {env, args_types} = HMEnv.zipmap_env(env, from_args_types, to_args_types, &resolve_types/3)
     {env, return_type} = resolve_types(env, from_return_type, to_return_type)
     type = %{type | args_types: args_types, return_type: return_type}

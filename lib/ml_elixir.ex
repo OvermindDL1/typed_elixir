@@ -724,24 +724,58 @@ opts = Keyword.put(opts, :full_stack, true)
 
 
   defp parse_module_def_head_arg(env, arg)
-  # Typed Binding
-  defp parse_module_def_head_arg(env, {:|, _meta, [{name, name_meta, context = nil}, type_ast]}) when is_atom(name) and is_atom(context) do
-    # {env, {arg_first, arg_meta, arg_third} = arg} = parse_module_def_head_arg(env, arg_ast)
-    # arg_type = arg_meta[:type]
+  # Typed
+  defp parse_module_def_head_arg(env, {:|, _meta, [expr, type_ast]}) do
+    {env, {first, meta, last}} = parse_module_def_head_arg(env, expr)
     {env, type} = parse_type_expression(env, type_ast)
-    # {env, type} = Type.resolve_types!(env, type, arg_type)
-    # if type === arg_type do
-    #   {env, arg}
-    # else
-    #   key = Key.binding(name)
-    #   env = HMEnv.push_type(env, key, type)
-    #   arg = {arg_first, [type: type] ++ arg_meta, arg_third}
-    #   {env, arg}
-    # end
-    key = Key.binding(name)
-    env = HMEnv.push_type(env, key, type)
-    ast = {:binding, [type: type] ++ name_meta, name}
+    {env, _resolved_type} = Type.resolve_types!(env, meta[:type], type)
+    {env, {first, [type: type]++meta, last}}
+  end
+  # Match
+  defp parse_module_def_head_arg(env, {:=, meta, [left_expr, right_expr]}) do
+    {env, {_, left_meta, _} = left} = parse_module_def_head_arg(env, left_expr)
+    {env, {_, right_meta, _} = right} = parse_module_def_head_arg(env, right_expr)
+    {env, resolved_type} = Type.resolve_types!(env, left_meta[:type], right_meta[:type])
+    {env, _resolved_type} = Type.resolve_types!(env, right_meta[:type], left_meta[:type])
+    ast = {:match, [type: resolved_type]++meta, [left, right]}
     {env, ast}
+  end
+  # Match Tuple
+  defp parse_module_def_head_arg(env, {:{}, meta, args}) do
+    {env, args_asts} = HMEnv.map_env(env, args, &parse_module_def_head_arg/2)
+    args_types = Enum.map(args_asts, &(elem(&1, 1)[:type]))
+    {env, type} = Type.Tuple.new(env, args_types)
+    ast = {:tuple, [type: type]++meta, args_asts}
+    {env, ast}
+  end
+  # Match Record
+  defp parse_module_def_head_arg(env, {:%{}, meta, args}) do
+    {env, kwargs} =
+      HMEnv.map_env(env, args, fn(env, {label, arg}) ->
+        {env, arg} = parse_module_def_head_arg(env, arg)
+        {env, {label, arg}}
+      end)
+    {env, kwtypes} =
+      HMEnv.map_env(env, kwargs, fn(env, {label, {_, meta, _}}) ->
+        type = meta[:type]
+        {env, {label, type}}
+      end)
+    {env, type} = Type.Record.new(env, kwtypes)
+    ast = {:record, [type: type]++meta, kwargs}
+    {env, ast}
+  end
+  # Constants
+  defp parse_module_def_head_arg(env, arg) when is_integer(arg) do
+    {env, type} = Type.Const.new(env, :integer, values: [arg])
+    {env, {:const, [type: type], arg}}
+  end
+  defp parse_module_def_head_arg(env, arg) when is_float(arg) do
+    {env, type} = Type.Const.new(env, :float, values: [arg])
+    {env, {:const, [type: type], arg}}
+  end
+  defp parse_module_def_head_arg(env, arg) when is_atom(arg) do
+    {env, type} = Type.Const.new(env, :atom, values: [arg])
+    {env, {:const, [type: type], arg}}
   end
   # Untyped Binding
   defp parse_module_def_head_arg(env, {name, meta, context = nil}) when is_atom(name) and is_atom(context) do
@@ -770,7 +804,7 @@ opts = Keyword.put(opts, :full_stack, true)
             # Else check if there is a 0-arity function with this name
             key = Key.func(name)
             case HMEnv.get_type(env, key) do
-              nil -> throw {:BINDING_NOT_FOUND, name}
+              nil -> throw {:BINDING_NOT_FOUND, name, meta}
               %Type.Func{args_types: [], return_type: return_type} -> # Call it, 0-args
                 ast = {:call, [type: return_type]++meta, [{name, 0}, []]}
                 {env, ast}
@@ -899,7 +933,8 @@ opts = Keyword.put(opts, :full_stack, true)
           unhandled_type -> throw {:TODO, :unhandled_dot_on_type, name, unhandled_type}
         end
       {env, {_, meta, _}=called_ast} -> # Callables
-        case meta[:type] do
+        {env, test_type} = Type.get_type_or_ptr_type(env, meta[:type])
+        case test_type do
           %Type.Record{labels: labels} = called_type ->
             case labels[name] do
               nil -> throw {:INVALID_RECORD_KEY, name, called_type}
@@ -907,7 +942,7 @@ opts = Keyword.put(opts, :full_stack, true)
                 ast = {:record_access, [type: value_type]++dot_meta, [called_ast, name]}
                 {env, ast}
             end
-          unhandled_type -> throw {:TODO, :unhandled_call_on_type, unhandled_type}
+          unhandled_type -> throw {:TODO, :unhandled_call_on_type, unhandled_type, meta}
         end
     end
 
@@ -1185,6 +1220,53 @@ opts = Keyword.put(opts, :full_stack, true)
 
 
 
+  defp convert_to_elixir_guard(env, typed_ast)
+  defp convert_to_elixir_guard(env, {:binding, m, _} = binding_ast) do
+    bound_ast = convert_to_elixir_module_body_ast(env, binding_ast)
+    case m[:type] do
+      nil -> throw {:TODO, :AST_WITHOUT_TYPE, binding_ast}
+      type ->
+        case Type.get_type_or_ptr_type(env, type) do # TODO:  Type the guards?  Probably no point...
+          {_env, %Type.Ptr.Generic{}} -> []
+          {_env, %Type.Const{const: :integer}} -> {:is_integer, m, [bound_ast]}
+          {_env, %Type.Const{const: :float}} -> {:is_float, m, [bound_ast]}
+          {_env, %Type.Const{const: :atom}} -> {:is_atom, m, [bound_ast]}
+          {_env, %Type.Record{labels: _labels}} -> {:is_map, m, [bound_ast]} # TODO:  Add a matching context for this
+          {_env, %Type.Tuple{elements: elements}} ->
+            [
+              {:is_tuple, m, [bound_ast]},
+              {:===, m, [
+                {:tuple_size, m, [bound_ast]},
+                length(elements)
+              ]} # TODO:  Recursively test through a tuple, need to pull out the guard generator into another function to be able to do that...
+            ]
+          {_env, %Type.Func{is_indirect: true, args_types: args_types}} ->
+            debug(type, env, :Indirect)
+            {:is_function, m, [bound_ast, length(args_types)]}
+          {_env, unhandled} -> throw {:TODO, :unhandled_arg_guard_type, unhandled, binding_ast}
+        end
+    end
+  end
+  defp convert_to_elixir_guard(_env, {:const, _m, _value}) do
+    # No need to build a guard for a constant type...
+    []
+  end
+  defp convert_to_elixir_guard(env, {:match, _m, [left, right]}) do
+    left_guard = convert_to_elixir_guard(env, left)
+    right_guard = convert_to_elixir_guard(env, right)
+    [left_guard, right_guard] # Eh, match everything for now, can refine later...
+  end
+  defp convert_to_elixir_guard(env, {:record, _meta, elements}) do
+    Enum.map(elements, &convert_to_elixir_guard(env, elem(&1, 1)))
+  end
+  defp convert_to_elixir_guard(env, {:tuple, _meta, elements}) do
+    Enum.map(elements, &convert_to_elixir_guard(env, &1))
+  end
+  defp convert_to_elixir_guard(_env, typed_ast) do
+    throw {:TODO, :unhandled_arg_guard, typed_ast}
+  end
+
+
   defp convert_to_elixir_module_body_ast(env, module_expr)
   defp convert_to_elixir_module_body_ast(_env, {:type, _, _}), do: nil # Ignore type definitions for per-expression code ast
   defp convert_to_elixir_module_body_ast(env, {:external, external_meta, [name, {modules, func_name, arg_count}]}) do
@@ -1204,40 +1286,7 @@ opts = Keyword.put(opts, :full_stack, true)
       if env.user[:disable_guards] do
         []
       else
-        Enum.map(args, fn
-          {:binding, m, _} = binding_ast ->
-            bound_ast = convert_to_elixir_module_body_ast(env, binding_ast)
-            case m[:type] do
-              nil -> throw {:TODO, :AST_WITHOUT_TYPE, binding_ast}
-              type ->
-                # {env, bound_type} =
-                #   Type.get_type_or_ptr_type(env, type)
-                #   |> case do
-                #     # {env, %Type.Ptr.Generic{}=gen} -> {env, Type.get_generic_bound(env, gen)}
-                #     result -> result
-                #   end
-                case Type.get_type_or_ptr_type(env, type) do # TODO:  Type the guards?  Probably no point...
-                  {_env, %Type.Ptr.Generic{}} -> []
-                  {_env, %Type.Const{const: :integer}} -> {:is_integer, m, [bound_ast]}
-                  {_env, %Type.Const{const: :float}} -> {:is_float, m, [bound_ast]}
-                  {_env, %Type.Const{const: :atom}} -> {:is_atom, m, [bound_ast]}
-                  {_env, %Type.Record{labels: _labels}} -> {:is_map, m, [bound_ast]} # TODO:  Add a matching context for this
-                  {_env, %Type.Tuple{elements: elements}} ->
-                    [
-                      {:is_tuple, m, [bound_ast]},
-                      {:===, m, [
-                        {:tuple_size, m, [bound_ast]},
-                        length(elements)
-                      ]} # TODO:  Recursively test through a tuple, need to pull out the guard generator into another function to be able to do that...
-                    ]
-                  {_env, %Type.Func{is_indirect: true, args_types: args_types}} ->
-                    debug(type, env, :Indirect)
-                    {:is_function, m, [bound_ast, length(args_types)]}
-                  {_env, unhandled} -> throw {:TODO, :unhandled_arg_guard_type, unhandled, binding_ast}
-                end
-            end
-          unhandled -> throw {:TODO, :unhandled_arg_guard, unhandled}
-        end)
+        Enum.map(args, &convert_to_elixir_guard(env, &1))
         |> List.flatten()
       end
     body_ast = convert_to_elixir_module_body_ast(env, body_expr)
@@ -1381,6 +1430,12 @@ opts = Keyword.put(opts, :full_stack, true)
   defp convert_to_elixir_module_body_ast(env, {:tuple, meta, args}) do
     args_ast = Enum.map(args, &convert_to_elixir_module_body_ast(env, &1))
     {:{}, meta, args_ast}
+  end
+  # Match
+  defp convert_to_elixir_module_body_ast(env, {:match, meta, [left, right]}) do
+    left_ast = convert_to_elixir_module_body_ast(env, left)
+    right_ast = convert_to_elixir_module_body_ast(env, right)
+    {:=, meta, [left_ast, right_ast]}
   end
   defp convert_to_elixir_module_body_ast(_env, {:const, _meta, value}), do: value
   defp convert_to_elixir_module_body_ast(_env, module_expr) do

@@ -106,6 +106,23 @@ defmodule MLElixirTest do
     def testering_func31(value, f) = f(value)
     def testering_func32(value | integer, f) = f(value)
 
+    # Bindings
+    def testering_binding0(i) = i
+    def testering_binding1(i | integer) = i
+    def testering_binding2(42) = 42
+    def testering_binding3(42 | integer) = 42
+    def testering_binding4(42 = i) = i
+    def testering_binding5(i = 42) = i
+    def testering_binding6({i}) = i
+    def testering_binding7({42}) = 42
+    def testering_binding8({i | integer}) = i
+    def testering_binding9({i | integer} | {integer}) = i
+    def testering_binding10({i} | {integer}) = i
+    def testering_binding11({i}=t) = {i, t}
+    def testering_binding12(%{a: i | integer}) = i
+    def testering_binding13(%{a: i | integer}=r) = %{b: r}
+    # def testering_binding1({a, b, c} = t) = {a, b, c, t}
+
     # Records (I.E. Erlang/Elixir atom() keyed maps, like structs)
     type record0 = %{} # Empty record
     type record1 = %{
@@ -261,6 +278,22 @@ defmodule MLElixirTest do
     assert MLModuleTest_Specific.testering_func31(21, fn x -> x * 2 end) === 42
     assert MLModuleTest_Specific.testering_func32(21, fn x -> x * 2 end) === 42
 
+    # Bindings
+    assert MLModuleTest_Specific.testering_binding0(42) == 42
+    assert MLModuleTest_Specific.testering_binding1(42) == 42
+    assert MLModuleTest_Specific.testering_binding2(42) == 42
+    assert MLModuleTest_Specific.testering_binding3(42) == 42
+    assert MLModuleTest_Specific.testering_binding4(42) == 42
+    assert MLModuleTest_Specific.testering_binding5(42) == 42
+    assert MLModuleTest_Specific.testering_binding6({42}) == 42
+    assert MLModuleTest_Specific.testering_binding7({42}) == 42
+    assert MLModuleTest_Specific.testering_binding8({42}) == 42
+    assert MLModuleTest_Specific.testering_binding9({42}) == 42
+    assert MLModuleTest_Specific.testering_binding10({42}) == 42
+    assert MLModuleTest_Specific.testering_binding11({42}) == {42, {42}}
+    assert MLModuleTest_Specific.testering_binding12(%{a: 42}) == 42
+    assert MLModuleTest_Specific.testering_binding13(%{a: 42}) == %{b: %{a: 42}}
+
     # Records
     assert MLModuleTest_Specific.testering_record0() === %{}
     assert MLModuleTest_Specific.testering_record1() === %{x: 42, y: 6.28}
@@ -377,12 +410,12 @@ defmodule MLElixirTest do
 
 
   test "MLElixir macro calls" do
-    defmlmodule MLElixir.Tests.MacroTest do
-      # def&macro test_macro0 = 42
-      # let&macro test_macro0 | MLElixir.MLMacro.ast = 42
-      # def&macro test_macro0 | MLElixir.MLMacro.ast, do: MLElixir.MLMacro.ast.one
-      # let&macro test_macro0, do: 42
-    end
+    # defmlmodule MLElixir.Tests.MacroTest do
+    #   # def&macro test_macro0 = 42
+    #   # let&macro test_macro0 | MLElixir.MLMacro.ast = 42
+    #   # def&macro test_macro0 | MLElixir.MLMacro.ast, do: MLElixir.MLMacro.ast.one
+    #   # let&macro test_macro0, do: 42
+    # end
   end
 
 
