@@ -48,14 +48,27 @@ opts = Keyword.put(opts, :full_stack, true)
   end
   defmacro defmlmodule(name, [do: block_module]) do
     opts = Keyword.put([], :environment, __CALLER__)
-opts = Keyword.put(opts, :full_stack, true)
+# opts = Keyword.put(opts, :full_stack, true)
     case opts[:full_stack] do
       true -> defmlmodule_impl(name, block_module, opts)
       _ ->
         try do
           defmlmodule_impl(name, block_module, opts)
         catch
-          x -> quote(do: throw unquote(x))
+          x ->
+            x =
+              if debug?(opts, :plain_errors) do
+                x
+              else
+                case x do
+                  {:NO_TYPE_RESOLUTION, _, left, _, right} ->
+                    left = Type.simple_description_of_type(left)
+                    right = Type.simple_description_of_type(right)
+                    "No Type Resolutions between `#{left}` and `#{right}`"
+                  x -> x
+                end
+              end
+            quote(do: throw unquote(x))
         end
     end
   end
@@ -677,11 +690,11 @@ opts = Keyword.put(opts, :full_stack, true)
     func_key_global = Key.func(name)
     env = HMEnv.push_type(env, func_key, inner_type)
     env = HMEnv.push_type(env, func_key_global, inner_type)
-    {env, body} = parse_ml_expression(env, body_expr |> debug(env, :DefExpr))
-    {_, body_meta, _} = body |> debug(env, :DefBody)
+    {env, body} = parse_ml_expression(env, body_expr |> debug(false||env, :DefExpr, name))
+    {_, body_meta, _} = body |> debug(false||env, :DefBody, name)
     body_type = body_meta[:type]
     {env, return_type} = Type.resolve_types!(env, body_type, return_type)
-    return_type |> debug(env, :DefReturnType)
+    return_type |> debug(false||env, :DefReturnType, name)
     {env, args_types} =
       HMEnv.map_env(env, args_types, fn (env, arg_type) -> Type.map_types(env, arg_type, fn(env, v) ->
         case Type.get_type_or_ptr_type(env, v) do
@@ -693,13 +706,23 @@ opts = Keyword.put(opts, :full_stack, true)
           _res -> {env, v}
         end
       end) end)
+    args_types |> debug(env, :DefArgsTypes)
     {env, args} = HMEnv.zipmap_env(env, args, args_types, fn(env, {binding, meta, args}, type) -> {env, {binding, [type: type]++meta, args}} end)
     {env, _scope} = HMEnv.pop_scope(env, :def)
+    {args_types, args_types |> Enum.map(&elem(Type.get_type_or_ptr_type(env, &1), 1))} |> debug(env, :DefArgsTypesPre)
     {env, args_types} = Type.generify_unbound(env, args_types)
+    {args_types, args_types |> Enum.map(&elem(Type.get_type_or_ptr_type(env, &1), 1))} |> debug(env, :DefArgsTypesPost)
     {env, func_type} = Type.Func.new(env, args_types, return_type, false, nil)
     env = HMEnv.push_type(env, func_key, func_type)
     env = HMEnv.push_type(env, func_key_global, func_type)
-    ast = {:def, [type: func_type] ++ meta, [name, args, body]}
+    ast = {:def, [type: func_type] ++ meta, [name, args, body]} |> debug(false||env, :DefAST, name)
+if name in [:|>, :testering_op_pipe2] do
+  # debug(ast, true, name, 1)
+  # debug({func_type.args_types|>tl|>hd, Type.Ptr.get(env, func_type.args_types|>tl|>hd)}, true, name, 2)
+  # debug({func_type.return_type, Type.Ptr.get(env, func_type.return_type)}, true, name, 3)
+  # Process.sleep(50)
+  # throw {}
+end
     {env, ast}
   end
 
@@ -782,7 +805,7 @@ opts = Keyword.put(opts, :full_stack, true)
     {env, type} = Type.Ptr.Unbound.new_ptr(env)
     key = Key.binding(name)
     env = HMEnv.push_type(env, key, type)
-    ast = {:binding, [type: type] ++ meta, name}
+    ast = {:binding, [type: type, binding: :head_arg] ++ meta, name}
     {env, ast}
   end
   defp parse_module_def_head_arg(_env, arg) do
@@ -806,18 +829,21 @@ opts = Keyword.put(opts, :full_stack, true)
             case HMEnv.get_type(env, key) do
               nil -> throw {:BINDING_NOT_FOUND, name, meta}
               %Type.Func{args_types: [], return_type: return_type} -> # Call it, 0-args
-                ast = {:call, [type: return_type]++meta, [{name, 0}, []]}
+                ast = {:call, [type: return_type, binding: 1]++meta, [{name, 0}, []]}
                 {env, ast}
-              %Type.Func{args_types: args_types, return_type: return_type} = type -> # Curry to pass an anonymous function
+              %Type.Func{} = type -> # Curry to pass an anonymous function
+                # {env, type} = Type.unboundify_generic(env, type)
+                {env, type} = Type.Func.unbind_generics(env, type)
+                %Type.Func{args_types: args_types, return_type: return_type} = type
                 args_types_length = length(args_types)
                 {env, args_ast} =
                   HMEnv.zipmap_env(env, tl(Enum.into(-1..(args_types_length-1), [])), args_types, fn
                     (env, idx, type) ->
                       {env, var_id} = HMEnv.new_counter(env, :vars)
-                      ast = {:binding, [type: type]++meta, [String.to_atom("$var_#{idx}_#{var_id}")]}
+                      ast = {:binding, [type: type, binding: :ml_binding1]++meta, [String.to_atom("$var_#{idx}_#{var_id}")]}
                       {env, ast}
                   end)
-                body_ast = {:call, [type: return_type]++meta, [{name, args_types_length}, args_ast]}
+                body_ast = {:call, [type: return_type, binding: 2]++meta, [{name, args_types_length}, args_ast]}
                 ast = {:def, [type: type]++meta, [nil, args_ast, body_ast]}
                 {env, ast}
             end
@@ -851,7 +877,7 @@ opts = Keyword.put(opts, :full_stack, true)
           {apply_type, type} -> throw {:TODO, :unhandled_gadt_enum_typing, apply_type}
         end
       type ->
-        ast = {:binding, [type: type] ++ meta, [name]}
+        ast = {:binding, [type: type, binding: :ml_binding2] ++ meta, [name]}
         {env, ast}
     end
   end
@@ -887,7 +913,7 @@ opts = Keyword.put(opts, :full_stack, true)
     {env, args_asts} = HMEnv.map_env(env, args, &parse_ml_expression/2)
     case type do
       %Type.Module{types: %{^name => %Type.Func{args_types: args_types, return_type: return_type}}} when length(args_types) === length(args) ->
-        ast = {:call, [type: return_type]++call_meta, [{module_names, name, length(args_types)}, args_asts]}
+        ast = {:call, [type: return_type, external: 1]++call_meta, [{module_names, name, length(args_types)}, args_asts]}
         {env, ast}
       %Type.Module{types: %{^name => %Type.GADT{heads: heads}=gadt}} ->
         {env, {:invalid, [type: gadt]++call_meta, []}}
@@ -961,19 +987,19 @@ opts = Keyword.put(opts, :full_stack, true)
   end
   # Call 'something'
   defp parse_ml_expression(env, {name, meta, args}) when is_atom(name) and is_list(args) do
-    {name, meta, args} |> debug(env, :ExprCall)
-    key = Key.call(name)
-    case HMEnv.get_type(env, key) |> debug(env, :ExprCall, :CallKey) do
+    {name, meta, args} |> debug(false||env, :ExprCall)
+    key = Key.call(name) |> debug(false||env, :ExprCall, :CallKey)
+    case HMEnv.get_type(env, key) |> debug(false||env, :ExprCall, :CallKeyResult) do
       nil -> # Maybe it is a function?
         arg_mapper =
           fn
             (env, apply_type, {:_, _, scope}) when is_atom(scope) ->
-              {env, {:new_binding, [type: apply_type]++meta, []}}
+              {env, {:new_binding, [type: apply_type, new_binding: 1]++meta, []}}
             (env, apply_type, {binding_name, _, scope}=arg) when is_atom(scope) ->
               case Atom.to_string(binding_name) do
                 "_"<>test_name ->
                   case Integer.parse(test_name) do
-                    {num, ""} when num>=0 and num<128 -> {env, {:new_binding, [type: apply_type]++meta, [num]}}
+                    {num, ""} when num>=0 and num<128 -> {env, {:new_binding, [type: apply_type, new_binding: 2]++meta, [num]}}
                     _ -> parse_ml_expression_with_type(env, apply_type, arg)
                   end
                 _ -> parse_ml_expression_with_type(env, apply_type, arg)
@@ -988,7 +1014,7 @@ opts = Keyword.put(opts, :full_stack, true)
               {env, args} =
                 if length(args) <= c do
                   {env, unbound} = Type.Ptr.Unbound.new_ptr(env)
-                  {env, args++List.duplicate({:binding, [type: unbound], [:_]}, c-length(args)+1)}
+                  {env, args++List.duplicate({:binding, [type: unbound, new_binding: 3], [:_]}, c-length(args)+1)}
                 else
                   {env, args}
                 end
@@ -1000,7 +1026,7 @@ opts = Keyword.put(opts, :full_stack, true)
               {env, args} =
                 if length(args) <= c do
                   {env, unbound} = Type.Ptr.Unbound.new_ptr(env)
-                  {env, args++List.duplicate({:binding, [type: unbound], [:_]}, c-length(args)+1)}
+                  {env, args++List.duplicate({:binding, [type: unbound, new_binding: 4], [:_]}, c-length(args)+1)}
                 else
                   {env, args}
                 end
@@ -1009,36 +1035,55 @@ opts = Keyword.put(opts, :full_stack, true)
             (arg_ast, {env, args, calls, c}) ->
               {env, args, calls++[arg_ast], c}
           end
-        key = Key.func(name)
-        case HMEnv.get_type(env, key) |> debug(env, :ExprCall, :FuncKey) do
-          nil -> # TODO:  Maybe it is a callable variable?  Should probably test this first all things considered, so, it is a todo
-            key = Key.binding(name)
-            base_type = HMEnv.get_type(env, key) |> debug(env, :ExprCall, :BindingKey)
-            {env, type} = Type.get_type_or_ptr_type(env, base_type)
-            case type do
-              nil -> throw {:CALL_NOT_FOUND, name, args, env.types}
-              %Type.Ptr.Unbound{} -> # Unbound, and yet it is being called, refine it to a function
-                # First re-bind it to the function pointer of the same arity:
-                {env, args_types} = HMEnv.map_env(env, args, fn(env, arg) ->
-                  {env, {_, m, _,}} = parse_ml_expression(env, arg)
-                  {env, m[:type]} # Just want the type to do the inferencing for
-                end)
-                {env, return_type} = Type.Ptr.Generic.new_ptr(env, false)
-                {env, func} = Type.Func.new(env, args_types, return_type, true, nil)
-                env = Type.Ptr.set(env, base_type, func)
-                key = Key.func(name)
-                env = HMEnv.push_type(env, key, func)
-                parse_ml_expression(env, {name, meta, args}) # Then re-call self with the new function binding
-            end
+        key = Key.func(name) |> debug(false||env, :ExprCall, :FuncKey)
+        {env, type} =
+          case HMEnv.get_type(env, key) |> debug(false||env, :ExprCall, :FuncKeyResult)do
+            nil -> # TODO:  Maybe it is a callable variable?  Should probably test this first instead of last all things considered, so, it is a todo
+              key = Key.binding(name) |> debug(false||env, :ExprCall, :BindingKey)
+              base_type = HMEnv.get_type(env, key) |> debug(false||env, :ExprCall, :BindingKeyResult)
+              {env, type} = Type.get_type_or_ptr_type(env, base_type)
+              case type do
+                nil -> throw {:CALL_NOT_FOUND, name, args, env.types}
+                %Type.Ptr.Unbound{} -> # Unbound, and yet it is being called, refine it to a function
+                  # First re-bind it to the function pointer of the same arity:
+                  {env, args_types} =
+                    HMEnv.map_env(env, args, fn(env, arg) ->
+                      {env, {_, m, _,}} = parse_ml_expression(env, arg)
+                      {env, m[:type]} # Just want the type to do the inferencing for
+                    end)
+                  # {env, return_type} = Type.Ptr.Generic.new_ptr(env, false)
+                  {env, return_type} = Type.Ptr.Unbound.new_ptr(env)
+                  {env, func} = Type.Func.new(env, args_types, return_type, true, nil)
+                  {env, _resolved_func} = Type.resolve_types!(env, base_type, func |> debug(env, :ExprCall, :BindingKeyFuncType))
+                  # debug({func.args_types|>hd, Type.get_type_or_ptr_type(env, func.args_types|>hd)|>elem(1)}, false||env, :Blargh, name)
+                  {env, func}
+                _ -> throw {:TODO, :unhandled_binding_call_type, type}
+              end
+            type ->
+              {name, type, Type.debug_get_recursive_type_or_ptr_type(env, type)} |> debug(env, :ExprCall, :Bounded)
+              # {env, type} = Type.unboundify_generic(env, type)
+              {env, type} = Type.Func.unbind_generics(env, type)
+              {name, type, Type.debug_get_recursive_type_or_ptr_type(env, type)} |> debug(env, :ExprCall, :Unbounded)
+              {env, type}
+          end
+        case type do
+          nil -> throw {:CALL_BINDING_NOT_FOUND, name, args, env.types}
           %Type.Func{} = type -> #when length(args_types) < length(args) -> # call function, then call the output of that function, etc..
             # args_length = length(args)
             {env, funcs_types} = Type.Func.get_func_return_list(env, type)
-            {[], funcs_types} = Enum.reduce(funcs_types, {args, []}, fn # Prune the funcs_types to only fit the argument count
-              (%Type.Func{args_types: args_types}=type, {args, out}) when length(args_types) < length(args) -> {Enum.drop(args, length(args_types)), out++[type]}
-              (_type, {[], out}) -> {[], out}
-              (type, {_args, out}) -> {[], out++[type]}
-            end)
-            funcs_all_args_types = Enum.map(funcs_types, &Map.get(&1, :args_types)) |> List.foldr([], &Kernel.++/2)
+            args =
+              if length(args) < length(type.args_types) do
+                args ++ List.duplicate({:_, [], nil}, length(type.args_types)-length(args))
+              else
+                args
+              end
+            {[], funcs_types_reduced} =
+              Enum.reduce(funcs_types, {args, []}, fn # Prune the funcs_types to only fit the argument count
+                (%Type.Func{args_types: args_types}=type, {args, out}) when length(args_types) < length(args) -> {Enum.drop(args, length(args_types)), out++[type]}
+                (_type, {[], out}) -> {[], out}
+                (type, {_args, out}) -> {[], out++[type]}
+              end)
+            funcs_all_args_types = Enum.map(funcs_types_reduced, &Map.get(&1, :args_types)) |> List.foldr([], &Kernel.++/2)
             args =
               if length(args) < length(funcs_all_args_types) do
                 args ++ List.duplicate({:_, [], nil}, length(funcs_all_args_types)-length(args))
@@ -1048,7 +1093,6 @@ opts = Keyword.put(opts, :full_stack, true)
             {args, unused_args} = Enum.split(args, length(funcs_all_args_types))
             # {funcs_all_args_types, _unused_funcs_all_args_types} = Enum.split(funcs_all_args_types, args_length)
             # funcs_all_args_types = Enum.take(funcs_all_args_types, args_length)
-            {funcs_all_args_types, args}
             {env, args_ast} = HMEnv.zipmap_env(env, funcs_all_args_types, args, arg_mapper)
             {env, return, [nil], _main_args, _returning_type} =
               Enum.reduce(args_ast++[nil], {env, nil, [], [], type}, fn
@@ -1056,16 +1100,21 @@ opts = Keyword.put(opts, :full_stack, true)
                   args_ast = :lists.reverse(args)
                   name_ast =
                     case prior_ast do
-                      nil -> if(is_indirect, do: [indirect: {:binding, meta, [name]}], else: {name, length(args)})
+                      nil ->
+                        if is_indirect do
+                          [indirect: {:binding, [type: type, call_indirect: 1]++meta, [name]}]
+                        else
+                          {name, length(args)}
+                        end
                       prior_ast -> {prior_ast}
                     end
                   {env, ast, more_args} =
                     case Enum.reduce(args_ast, {env, [], [], 0}, args_ast_reducer) do
                       {env, [], calls, _} ->
-                        ast = {:call, [type: return_type] ++ meta, [name_ast, calls]}
+                        ast = {:call, [type: return_type, call: 1] ++ meta, [name_ast, calls]}
                         {env, ast, []}
                       {env, call_args, calls, _} ->
-                        body_ast = {:call, [type: return_type]++meta, [name_ast, calls]}
+                        body_ast = {:call, [type: return_type, call: 2]++meta, [name_ast, calls]}
                         case argument do
                           nil ->
                             args_types = Enum.map(call_args, &(elem(&1, 1)[:type]))
@@ -1083,7 +1132,7 @@ opts = Keyword.put(opts, :full_stack, true)
                   {env, ast, [nil], main_args, return_type}
               end)
             case unused_args do
-              [] -> {env, return}
+              [] -> {env, return |> debug(env, :ExprCall, :Return)}
               unused_args -> throw {:attempted_to_pass_args_to_non_function, name, unused_args}
             end
         end
@@ -1136,7 +1185,7 @@ opts = Keyword.put(opts, :full_stack, true)
                 {env, _resolved_type} = Type.resolve_types!(env, arg_type, apply_type)
                 {env, arg_ast}
             end)
-            ast = {:call, [type: type] ++ ext_meta, [{modules, func_name, arg_count}, args_ast]}
+            ast = {:call, [type: type, call: 3] ++ ext_meta, [{modules, func_name, arg_count}, args_ast]}
             {env, ast}
         end
       unhandled -> throw {:TODO, :unhandled_call_type, args, unhandled}
@@ -1156,32 +1205,66 @@ opts = Keyword.put(opts, :full_stack, true)
   end
 
 
+  # When I rewrite all of this, thread return types through *all* of the AST generators too...
   defp parse_ml_expression_with_type(env, type, expr) do
     {env, {first, meta, last} = expr_ast} = parse_ml_expression(env, expr)
     inferred_type = meta[:type]
+    {type, inferred_type, expr} |> debug(env, :ParseWithTyped)
     {env, from_inferred_type} = Type.get_type_or_ptr_type(env, inferred_type)
     {env, to_type} = Type.get_type_or_ptr_type(env, type)
+# debug({from_inferred_type, to_type, expr}, true, :Varoop)
+# Process.sleep(50)
+# if(not first in [:const, :binding], do: throw({to_type, expr_ast}))
     case {from_inferred_type, to_type} do
-      {%Type.Func{is_indirect: false}, %Type.Func{is_indirect: true, args_types: args_types, return_type: return_type}} ->
+      {%Type.Func{is_indirect: false, args_types: inferred_args_types}, %Type.Func{is_indirect: true, args_types: args_types, return_type: return_type}} when length(inferred_args_types) === length(args_types) ->
         new_type = %{inferred_type | is_indirect: true}
-        {env, resolved_type} = Type.resolve_types!(env, new_type, type)
+        {type, new_type} |> debug(env, :ParseWithTyped, :typed)
+        {env, resolved_type} = Type.resolve_types!(env, type, new_type)
+        resolved_type |> debug(env, :ParseWithTyped, :resolved)
         {env, args_ast} = HMEnv.map_env(env, args_types, fn(env, type) ->
           {env, var_id} = HMEnv.new_counter(env, :vars)
-          ast = {:binding, [type: type]++meta, [String.to_atom("$var_#{var_id}")]}
+          ast = {:binding, [type: type, call_type: 1]++meta, [String.to_atom("$var_#{var_id}")]}
           {env, ast}
         end)
-        body_ast = {:call, [type: return_type] ++ meta, [{expr_ast}, args_ast]}
+        body_ast = {:call, [type: return_type, call_type: 1] ++ meta, [{expr_ast}, args_ast]}
         ast = {:def, [type: resolved_type]++meta, [nil, args_ast, body_ast]}
         {env, ast}
+      {%Type.Func{is_indirect: false, args_types: inferred_args_types}, %Type.Func{is_indirect: true, args_types: args_types, return_type: _return_type}} when length(inferred_args_types) > length(args_types) ->
+        # Passed in function has more args than request, make a wrapper that return a function that takes the rest
+        {wrapper_args, wrapped_args} = Enum.split(inferred_args_types, length(args_types))
+        wrapped_type = %{from_inferred_type | is_indirect: true, args_types: wrapped_args}
+        wrapper_type = %{from_inferred_type | is_indirect: true, args_types: wrapper_args, return_type: wrapped_type}
+        {env, resolved_type} = Type.resolve_types!(env, type, wrapper_type)
+        {env, wrapped_args_ast} = HMEnv.zipmap_env(env, wrapped_args, args_types, fn(env, type, become_type) ->
+          {env, resolved_type} = Type.resolve_types!(env, type, become_type)
+          {env, var_id} = HMEnv.new_counter(env, :vars)
+          ast = {:binding, [type: resolved_type, call_type: 2]++meta, [String.to_atom("$var_#{var_id}")]}
+          {env, ast}
+        end)
+        {env, wrapper_args_ast} = HMEnv.map_env(env, wrapper_args, fn(env, type) ->
+          {env, var_id} = HMEnv.new_counter(env, :vars)
+          ast = {:binding, [type: type, call_type: 3]++meta, [String.to_atom("$var_#{var_id}")]}
+          {env, ast}
+        end)
+        wrapped_body_ast = {:call, [type: wrapped_type.return_type, call_type: 2] ++ meta, [{expr_ast}, wrapped_args_ast]}
+        wrapped_ast = {:def, [type: wrapped_type]++meta, [nil, wrapped_args_ast, wrapped_body_ast]}
+        wrapper_body_ast = wrapped_ast
+        wrapper_ast = {:def, [type: wrapped_type]++meta, [nil, wrapper_args_ast, wrapper_body_ast]}
+        {env, wrapper_ast}
+        debug(wrapper_ast, true, :Blargh)
+        Process.sleep(100)
+        throw {:TODO, :make_function_wrapper_of_proper_length, wrapper_type, to_type, wrapper_ast}
       _ ->
-        {env, resolved_type} = Type.resolve_types!(env, inferred_type, type)
-        {env, {first, [type: resolved_type]++meta, last}}
+        {env, resolved_type} = Type.resolve_types!(env, type, inferred_type)
+        {type, inferred_type, [type, inferred_type] |> Type.debug_get_recursive_type_or_ptr_type(env)} |> debug(env, :ParseWithTyped, :Unknown)
+        {env, {first, [type: resolved_type, unknown: :call1]++meta, last}}
     end
   end
 
 
   defp block_if_not_block(ast)
   defp block_if_not_block({:__block__, meta, exprs}=ast) when is_list(meta) and is_list(exprs), do: ast
+  # defp block_if_not_block(asts) when is_list(asts), do: {:__block__, [], asts}
   defp block_if_not_block(ast), do: {:__block__, [], [ast]}
 
 
@@ -1192,7 +1275,13 @@ opts = Keyword.put(opts, :full_stack, true)
     name_ast = {:__aliases__, [alias: false], names}
     body_ast = Enum.map(module_mlasts, &convert_to_elixir_module_body_ast(env, &1)) |> Enum.filter(&(&1))
     body_ast =
-      [ {:import, [], [{:__aliases__, [], [:Kernel]}, [except: [|>: 2]]]} # TODO:  Add more exceptions from Kernel here
+      [ {:import, [], [{:__aliases__, [], [:Kernel]}, [
+          # only: [
+          #   def: 2,
+          #   is_integer: 1, is_float: 1, is_atom: 1, is_tuple: 1, is_function: 2, is_map: 1,
+          #   and: 2, or: 2
+          # ]]]} # TODO:  Add more exceptions from Kernel here
+          except: [|>: 2]]]} # TODO:  Add more exceptions from Kernel here
         | body_ast
       ]
     ml_module_info_ast = generate_ml_module_info(env, module_type)
@@ -1243,6 +1332,7 @@ opts = Keyword.put(opts, :full_stack, true)
           {_env, %Type.Func{is_indirect: true, args_types: args_types}} ->
             debug(type, env, :Indirect)
             {:is_function, m, [bound_ast, length(args_types)]}
+          {_env, unhandled} -> debug({unhandled, binding_ast}, true, :Whaaaa); []
           {_env, unhandled} -> throw {:TODO, :unhandled_arg_guard_type, unhandled, binding_ast}
         end
     end

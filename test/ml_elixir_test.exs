@@ -105,6 +105,7 @@ defmodule MLElixirTest do
     def testering_func30(f) = f(2)
     def testering_func31(value, f) = f(value)
     def testering_func32(value | integer, f) = f(value)
+    def testering_func33 = testering_func31(3, testering_func1(1, 2))
 
     # Bindings
     def testering_binding0(i) = i
@@ -121,7 +122,6 @@ defmodule MLElixirTest do
     def testering_binding11({i}=t) = {i, t}
     def testering_binding12(%{a: i | integer}) = i
     def testering_binding13(%{a: i | integer}=r) = %{b: r}
-    # def testering_binding1({a, b, c} = t) = {a, b, c, t}
 
     # Records (I.E. Erlang/Elixir atom() keyed maps, like structs)
     type record0 = %{} # Empty record
@@ -179,12 +179,20 @@ defmodule MLElixirTest do
 
     def value |> fun = fun(value)
     # let value |> fun = fun(value) # Both work as always
-    def testering_op_pipe0 = 42 |> testering_tuple5
+    # def testering_op_pipe0 = 42 |> testering_tuple5
     def identity(i) = i
     def testering_op_pipe1(i) =
       42
       |> identity
       |> testering_func1(1, _, i)
+    # def testering_op_pipe2(i) =
+    #   42
+    #   |> identity
+    #   |> testering_func1(1) # partial currying not yet implemented, see:  :make_function_wrapper_of_proper_length
+    # def testering_op_pipe2() =
+    #   42
+    #   |> identity
+    #   |> testering_func1
   end
 
   # defmlmodule MLModuleTest_Specific_Module | MLModuleTest.(t: int) do
@@ -333,8 +341,8 @@ defmodule MLElixirTest do
       import Kernel, except: [|>: 2]
       import MLModuleTest_Specific, only: [|>: 2]
       assert (21 |> (&(&1*2))) === 42
-      assert MLModuleTest_Specific.testering_op_pipe0() === {42}
       assert MLModuleTest_Specific.testering_op_pipe1(3) === {1, 42, 3}
+      # assert MLModuleTest_Specific.testering_op_pipe2(3) === {1, 42, 3}
     end).()
   end
 

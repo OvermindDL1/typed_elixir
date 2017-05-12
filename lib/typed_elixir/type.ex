@@ -85,6 +85,18 @@ defmodule TypedElixir.Type do
       set(env, ptr, link)
     end
 
+    def set_deep(env, ptr, value), do: set_deep(env, ptr, value, [])
+    def set_deep(env, %Ptr{}=ptr, value, cache) do
+      if ptr in cache do
+        set(env, ptr, value)
+      else
+        case get(env, ptr) do
+          %Ptr.Link{type: %Ptr{}=deep} -> set_deep(env, deep, value, [ptr | cache])
+          _ -> set(env, ptr, value)
+        end
+      end
+    end
+
   end
 
 
@@ -188,6 +200,62 @@ defmodule TypedElixir.Type do
       {env, [func | return]}
     end
     def get_func_return_list(env, _type), do: {env, []}
+
+    def unbind_generics_arg(env, arg_type)
+    def unbind_generics_arg(env, %Ptr{} = ptr) do
+      case Ptr.get(env, ptr) do
+        %Ptr.Generic{id: id, named: false} ->
+          key = {:unbind_generics_arg, id}
+          case HMEnv.get_type(env, key) do
+            nil ->
+              {env, ptr} = Ptr.Unbound.new_ptr(env)
+              env = HMEnv.push_type(env, key, ptr)
+              {env, ptr |> HMEnv.debug(env, :func_unbind_generic, :unset_generic)}
+            ptr -> {env, ptr |> HMEnv.debug(env, :func_unbind_generic, :set_generic)}
+          end
+        %Ptr.Link{type: link} -> TypedElixir.Type.map_types(env, link, &unbind_generics_arg/2)
+        _ -> {env, ptr |> HMEnv.debug(env, :func_unbind_generic, :link)}
+      end
+    end
+    def unbind_generics_arg(env, arg_type), do: {env, arg_type |> HMEnv.debug(env, :func_unbind_generic, :default)}
+    def unbind_generics(env, %Func{args_types: args_types, return_type: return_type} = type) do
+      type |> HMEnv.debug(env, :func_unbind_generic, :start)
+      env = HMEnv.push_scope(env, :Func_unbind_generics)
+      {env, args_types} = TypedElixir.Type.map_types(env, args_types, &unbind_generics_arg/2)
+      {env, return_type} = unbind_generics_arg(env, return_type)
+      {env, _scope_data} = HMEnv.pop_scope(env, :Func_unbind_generics)
+      type = %{type | args_types: args_types, return_type: return_type}
+      {env, type}
+    end
+
+    # def unboundify(env, %Func{args_types: args_types, return_type: return_type} = type) do
+    #   {env, args_types_mappings} =
+    #     HMEnv.map_env(env, args_types, fn(env, arg_type) ->
+    #       {env, arg_type} = TypedElixir.Type.map_types(env, arg_type, [:ptr_recurse], fn
+    #         (env, %Ptr.Generic{id: id}) ->
+    #           {env, unbound} = Ptr.Unbound.new(env)
+    #           {env, id}
+    #       end)
+    #       # case TypedElixir.Type.get_type_or_ptr_type(env, arg_type) do
+    #       #   {env, %Ptr.Generic{id: id}}->
+    #       #     {env, ptr} = Ptr.Unbound.new(env)
+    #       #     {env, {id, ptr}}
+    #       #   {env, arg} -> {env, {nil, arg}}
+    #       # end
+    #     end)
+    #   args_types = Enum.map(args_types_mappings, &elem(&1, 1))
+    #   {env, return_type} =
+    #     case TypedElixir.Type.get_type_or_ptr_type(env, return_type) do
+    #       {env, %Ptr.Generic{id: id}}->
+    #         case :lists.keyfind(id, 1, args_types_mappings) do
+    #           {^id, return_type} -> {env, return_type}
+    #           _ -> {env, return_type}
+    #         end
+    #       {env, _type} -> {env, return_type}
+    #     end
+    #   type = %{type | args_types: args_types, return_type: return_type}
+    #   {env, type}
+    # end
   end
 
 
@@ -305,41 +373,75 @@ defmodule TypedElixir.Type do
   def get_type_or_ptr_type(env, type), do: {env, type}
 
 
+  def simple_description_of_type(type)
+  def simple_description_of_type(%Const{const: const}), do: to_string(const)
+  def simple_description_of_type(type), do: inspect(type)
+
+
+  def debug_get_recursive_type_or_ptr_type(env, type)
+  def debug_get_recursive_type_or_ptr_type(type, %HMEnv{}=env), do: debug_get_recursive_type_or_ptr_type(env, type)
+  def debug_get_recursive_type_or_ptr_type(%HMEnv{}=env, types) when is_list(types) do
+    Enum.map(types, &debug_get_recursive_type_or_ptr_type(env, &1, 3))
+  end
+  def debug_get_recursive_type_or_ptr_type(%HMEnv{}=env, type), do: debug_get_recursive_type_or_ptr_type(env, type, 3)
+  def debug_get_recursive_type_or_ptr_type(env, type, max_depth)
+  def debug_get_recursive_type_or_ptr_type(_env, type, 0), do: type
+  def debug_get_recursive_type_or_ptr_type(env, type, max_depth) do
+    max_depth = max_depth - 1
+    {env, type} = get_type_or_ptr_type(env, type)
+    case type do
+      %Ptr.Generic{} -> type
+      %Ptr.Unbound{} -> type
+      %Const{} -> type
+      %Func{args_types: args_types, return_type: return_type} ->
+        args_types = Enum.map(args_types, &debug_get_recursive_type_or_ptr_type(env, &1, max_depth))
+        return_type = debug_get_recursive_type_or_ptr_type(env, return_type, max_depth)
+        %{type | args_types: args_types, return_type: return_type}
+      %Tuple{elements: elements} ->
+        elements = Enum.map(elements, &debug_get_recursive_type_or_ptr_type(env, &1, max_depth))
+        %{type | elements: elements}
+    end
+  end
+
+
   # Depth-first pass
   def map_types(env, type, opts \\ [], callback)
+  def map_types(env, types, opts, callback) when is_list(types) do
+    HMEnv.map_env(env, types, &map_types(&1, &2, opts, callback))
+  end
   def map_types(env, %Const{} = type, _opts, callback), do: callback.(env, type)
   def map_types(env, %App{type: inner_type} = type, _opts, callback) do
     {env, new_type} = callback.(env, inner_type)
     type = %{type | type: new_type}
     callback.(env, type)
   end
-  def map_types(env, %Func{args_types: args_types, return_type: return_type} = type, _opts, callback) do
-    {env, args_types} = HMEnv.map_env(env, args_types, callback)
-    {env, return_type} = callback.(env, return_type)
+  def map_types(env, %Func{args_types: args_types, return_type: return_type} = type, opts, callback) do
+    {env, args_types} = map_types(env, args_types, opts, callback)
+    {env, return_type} = map_types(env, return_type, opts, callback)
     type = %{type | args_types: args_types, return_type: return_type}
     callback.(env, type)
   end
-  def map_types(env, %Module{types: types} = type, _opts, callback) do
+  def map_types(env, %Module{types: types} = type, opts, callback) do
     {env, types} =
       HMEnv.map_env(env, Enum.into(types, []), fn (env, {name, type}) ->
-        {env, t} = callback.(env, type)
+        {env, t} = map_types(env, type, opts, callback)
         {env, {name, t}}
       end)
     types = Enum.into(types, %{})
     type = %{type | types: types}
     callback.(env, type)
   end
-  def map_types(env, %Record{labels: labels} = type, _opts, callback) do
+  def map_types(env, %Record{labels: labels} = type, opts, callback) do
     {env, typed_labels} =
       HMEnv.map_env(env, labels, fn (env, {label, type}) ->
-        {env, t} = callback.(env, type)
+        {env, t} = map_types(env, type, opts, callback)
         {env, {label, t}}
       end)
     type = %{type | labels: typed_labels}
     callback.(env, type)
   end
-  def map_types(env, %Tuple{elements: elements} = type, _opts, callback) do
-    {env, typed_elements} = HMEnv.map_env(env, elements, callback)
+  def map_types(env, %Tuple{elements: elements} = type, opts, callback) do
+    {env, typed_elements} = map_types(env, elements, opts, callback)
     type = %{type | elements: typed_elements}
     callback.(env, type)
   end
@@ -369,24 +471,82 @@ defmodule TypedElixir.Type do
         {env, generic} = Ptr.Generic.new(env, false)
         env = Ptr.set(env, ptr, generic)
         {env, ptr}
-        _ -> {env, ptr}
+      %Ptr.Link{type: linked} = link ->
+        case generify_unbound(env, linked) do
+          {env, ^linked} -> {env, ptr}
+          {env, linked} ->
+            link = %{link | type: linked}
+            env = Ptr.set(env, ptr, link)
+            {env, ptr}
+        end
+      %Ptr.Generic{named: _is_named} -> {env, ptr}
     end
   end
-  def generify_unbound(env, %Func{args_types: args_types}) do
-    HMEnv.map_env(env, args_types, &generify_unbound/2)
+  def generify_unbound(env, %Func{args_types: args_types, return_type: return_type} = type) do
+    {env, args_types} = HMEnv.map_env(env, args_types, &generify_unbound/2)
+    {env, return_type} = generify_unbound(env, return_type)
+    type = %{type | args_types: args_types, return_type: return_type}
+    {env, type}
   end
-  def generify_unbound(env, %Record{labels: labels}) do
-    HMEnv.map_env(env, labels, fn(env, {_name, type}) ->
-      generify_unbound(env, type)
-    end)
+  def generify_unbound(env, %Record{labels: labels} = type) do
+    {env, labels} =
+      HMEnv.map_env(env, labels, fn(env, {_name, type}) ->
+        generify_unbound(env, type)
+      end)
+    type = %{type | labels: labels}
+    {env, type}
   end
-  def generify_unbound(env, %Tuple{elements: elements}) do
-    HMEnv.map_env(env, elements, &generify_unbound/2)
+  def generify_unbound(env, %Tuple{elements: elements} = type) do
+    {env, elements} = HMEnv.map_env(env, elements, &generify_unbound/2)
+    type = %{type | elements: elements}
+    {env, type}
   end
   def generify_unbound(env, %Const{} = type), do: {env, type}
   def generify_unbound(_env, type) do
     throw {:TODO, :generify_unbound_unhandled, type}
   end
+
+
+
+
+  # def unboundify_generic(env, type)
+  # def unboundify_generic(env, %Ptr{} = ptr) do
+  #   case Ptr.get(env, ptr) do
+  #     %Ptr.Unbound{} -> {env, ptr}
+  #     %Ptr.Generic{named: false} -> Ptr.Unbound.new_ptr(env, false)
+  #     %Ptr.Generic{named: true} -> Ptr.Generic.new_ptr(env, true)
+  #     %Ptr.Link{type: linked} ->
+  #       {env, new_linked} = unboundify_generic(env, linked)
+  #       if linked === new_linked do
+  #         {env, ptr}
+  #       else
+  #         Ptr.Link.new_ptr(env, new_linked)
+  #       end
+  #   end
+  # end
+  # def unboundify_generic(env, %Const{} = type), do: {env, type}
+  # def unboundify_generic(env, %Record{labels: labels} = type) do
+  #   {env, labels} =
+  #     HMEnv.map_env(env, labels, fn(env, {_name, type}) ->
+  #       generify_unbound(env, type)
+  #     end)
+  #   type = %{type | labels: labels}
+  #   {env, type}
+  # end
+  # def unboundify_generic(env, %Tuple{elements: elements} = type) do
+  #   {env, elements} = HMEnv.map_env(env, elements, &unboundify_generic/2)
+  #   type = %{type | elements: elements}
+  #   {env, type}
+  # end
+  # def unboundify_generic(env, %Func{args_types: args_types, return_type: return_type} = type) do
+  #   {env, args_types} = HMEnv.map_env(env, args_types, &unboundify_generic/2)
+  #   {env, return_type} = unboundify_generic(env, return_type)
+  #   type = %{type | args_types: args_types, return_type: return_type}
+  #   {env, type}
+  # end
+  # def unboundify_generic(_env, type) do
+  #   throw {:TODO, :unboundify_generic_unhandled, type}
+  # end
 
 
 
@@ -408,39 +568,40 @@ defmodule TypedElixir.Type do
     {from, into} |> HMEnv.debug(env, :resolving, :start)
     {env, fromType} = get_type_or_ptr_type(env, from)
     {env, intoType} = get_type_or_ptr_type(env, into)
-    {fromType, intoType} |> HMEnv.debug(env, :resolving, :post)
-    {env, type} = resolve_types_nolinks(env, from, fromType, intoType)
+    {fromType, intoType} |> HMEnv.debug(env, :resolving, :pre)
+    {env, type} = resolve_types_nolinks(env, from, fromType, into, intoType)
     type |> HMEnv.debug(env, :resolving, :end)
     {env, type}
   end
 
 
-  defp resolve_types(env, _baseFrom, %Ptr{}=from, into) do
+  defp resolve_types(env, _baseFrom, %Ptr{}=from, baseInto, into) do
     {env, fromType} = get_type_or_ptr_type(env, from)
     {env, intoType} = get_type_or_ptr_type(env, into)
-    {env, type} = resolve_types_nolinks(env, from, fromType, intoType)
+    {env, type} = resolve_types_nolinks(env, from, fromType, baseInto, intoType)
     {env, type}
   end
-  defp resolve_types(env, baseFrom, from, into) do
+  defp resolve_types(env, baseFrom, from, baseInto, into) do
     {env, fromType} = get_type_or_ptr_type(env, from)
     {env, intoType} = get_type_or_ptr_type(env, into)
-    {env, type} = resolve_types_nolinks(env, baseFrom, fromType, intoType)
+    {env, type} = resolve_types_nolinks(env, baseFrom, fromType, baseInto, intoType)
     {env, type}
   end
 
 
-  defp resolve_types_nolinks(env, from, fromType, intoType)
-  defp resolve_types_nolinks(env, _from, type, type), do: {env, type}
-  defp resolve_types_nolinks(env, _from, %Const{const: const_type} = type, %Const{const: const_type}) do
+  defp resolve_types_nolinks(env, from, fromType, into, intoType)
+  defp resolve_types_nolinks(env, _from, type, _into, type), do: {env, type}
+  defp resolve_types_nolinks(env, _from, %Const{const: const_type} = type, _into, %Const{const: const_type}) do
     # TODO:  Verify the metas too...
     {env, type}
   end
-  defp resolve_types_nolinks(env, _from, fromType, %Ptr.Unbound{}=_intoType), do: {env, fromType} # Everything goes in to an Unbound
-  defp resolve_types_nolinks(env, %Ptr{}=ptr, %Ptr.Unbound{}, intoType) do # Can also refine an unbound too
-    env = Ptr.set(env, ptr, intoType)
+  defp resolve_types_nolinks(env, %Ptr{}=ptr, %Ptr.Unbound{}=un, into, intoType) do # Can also refine an unbound too
+    {ptr, un, into, intoType} |> HMEnv.debug(env, :resolving, :unbound_set)
+    env = Ptr.set_deep(env, ptr, into)
     {env, ptr}
   end
-  defp resolve_types_nolinks(env, from, fromType, %Ptr.Generic{id: id, named: _named}=intoType) do
+  defp resolve_types_nolinks(env, from, _fromType, _into, %Ptr.Unbound{}=_intoType), do: {env, from} # Everything goes in to an Unbound
+  defp resolve_types_nolinks(env, from, fromType, into, %Ptr.Generic{id: id, named: _named}=_intoType) do # Everything goes in to a generic
     # key = {:generic_id, id}
     # IO.inspect(id, label: :bleep)
     # case HMEnv.get_type(env, key) do
@@ -454,14 +615,13 @@ defmodule TypedElixir.Type do
     key = {:generic_id, id}
     case HMEnv.get_type(env, key) do
       nil ->
-        # throw {:BLARGH, id, fromType, Map.keys(env.types)}
-        # IO.inspect(id, label: :blorpo)
-        {env, intoType}
+        # {env, intoType} # Don't return the generic, return the ptr if anything...
+        {env, fromType}
       intoType ->
-        resolve_types(env, from, intoType, fromType)
+        resolve_types(env, from, intoType, into, fromType)
     end
   end
-  defp resolve_types_nolinks(env, from, %Ptr.Generic{id: id, named: _named}=_fromType, intoType) do
+  defp resolve_types_nolinks(env, from, %Ptr.Generic{id: id, named: _named}=_fromType, into, intoType) do # Refine generic to actual thing
     # key = {:generic_id, id}
     # case HMEnv.get_type(env, key) do
     #   nil ->
@@ -472,51 +632,49 @@ defmodule TypedElixir.Type do
     #     resolve_types(env, from, fromType, intoType)
     # end
     key = {:generic_id, id}
-    # IO.inspect(id, label: :bleep)
     case HMEnv.get_type(env, key) do
       nil ->
         env = HMEnv.push_type(env, key, intoType)
-        # IO.inspect(id, label: :bloop)
         {env, intoType}
       type ->
-        resolve_types(env, from, intoType, type)
+        resolve_types(env, from, type, into, intoType)
     end
   end
   # defp resolve_types_nolinks(env, _from, fromType, %Ptr.Generic{named: false}=_intoType), do: {env, fromType} # Everything goes out to an unnamed generic too (good luck recovering it)
   # defp resolve_types_nolinks(env, _from, fromType, %Ptr.Generic{named: true}=_intoType), do: {env, fromType} # TODO:  Everything also goes in to a named generic, buuuut.....
   # Checking if an applied type matches the other type
-  defp resolve_types_nolinks(env, _from, %App{type: type}, %App{type: type}), do: {env, type}
-  defp resolve_types_nolinks(env, from, %App{type: fromType}, intoType) do
-    resolve_types(env, from, fromType, intoType)
+  defp resolve_types_nolinks(env, _from, %App{type: type}, _into, %App{type: type}), do: {env, type}
+  defp resolve_types_nolinks(env, from, %App{type: fromType}, into, intoType) do
+    resolve_types(env, from, fromType, into, intoType)
     # {env, fromType} = get_type_or_ptr_type(env, fromType)
     # resolve_types_nolinks(env, fromType, intoType)
   end
-  defp resolve_types_nolinks(env, from, fromType, %App{type: intoType}) do
-    resolve_types(env, from, fromType, intoType)
+  defp resolve_types_nolinks(env, from, fromType, into, %App{type: intoType}) do
+    resolve_types(env, from, fromType, into, intoType)
     # {env, intoType} = get_type_or_ptr_type(env, intoType)
     # resolve_types_nolinks(env, fromType, intoType)
   end
-  defp resolve_types_nolinks(env, _from, %Func{is_indirect: is_indirect, args_types: from_args_types, return_type: from_return_type, call: call} = type, %Func{is_indirect: is_indirect, args_types: to_args_types, return_type: to_return_type, call: call}) when length(from_args_types) === length(to_args_types) do
+  defp resolve_types_nolinks(env, _from, %Func{is_indirect: is_indirect, args_types: from_args_types, return_type: from_return_type, call: call} = type, _into, %Func{is_indirect: is_indirect, args_types: to_args_types, return_type: to_return_type, call: call}) when length(from_args_types) === length(to_args_types) do
     {env, args_types} = HMEnv.zipmap_env(env, from_args_types, to_args_types, &resolve_types/3)
     {env, return_type} = resolve_types(env, from_return_type, to_return_type)
     type = %{type | args_types: args_types, return_type: return_type}
     {env, type}
   end
-  defp resolve_types_nolinks(env, from, %Record{labels: fromLabels} = type, %Record{labels: toLabels}) do
+  defp resolve_types_nolinks(env, _from, %Record{labels: fromLabels} = type, _into, %Record{labels: toLabels}) do
     fromLabels = Enum.sort(fromLabels)
     toLabels = Enum.sort(toLabels)
     if length(fromLabels) != length(toLabels), do: throw {:NO_TYPE_RESOLUTION, :RECORD_LENGTH_DOES_NOT_MATCH, Keyword.keys(fromLabels), Keyword.keys(toLabels)}
     {env, _labels} =
       HMEnv.zipmap_env(env, fromLabels, toLabels, fn
         (env, {label, ltype}, {label, ltype}) -> {env, ltype}
-        (env, {label, fromType}, {label, toType}) -> resolve_types(env, from, fromType, toType)
-        (env, {fromLabel, _fromType}, {toLabel, _toType}) -> throw {:NO_TYPE_RESOLUTION, :RECORD_LABEL_MISMATCH, if(fromLabel<toLabel, do: fromLabel, else: toLabel), :EXPECTED, if(fromLabel<toLabel, do: toLabel, else: fromLabel)}
+        (env, {label, fromType}, {label, toType}) -> resolve_types(env, fromType, toType)
+        (_env, {fromLabel, _fromType}, {toLabel, _toType}) -> throw {:NO_TYPE_RESOLUTION, :RECORD_LABEL_MISMATCH, if(fromLabel<toLabel, do: fromLabel, else: toLabel), :EXPECTED, if(fromLabel<toLabel, do: toLabel, else: fromLabel)}
         # (_env, {label, _}, _) -> throw {:NO_TYPE_RESOLUTION, :RECORD_FROM, label}
         # (_env, _, {label, _}) -> throw {:NO_TYPE_RESOLUTION, :RECORD_TO, label}
       end)
     {env, type}
   end
-  defp resolve_types_nolinks(env, _from, %Tuple{elements: fromElements} = type, %Tuple{elements: toElements}) when length(fromElements) === length(toElements) do
+  defp resolve_types_nolinks(env, _from, %Tuple{elements: fromElements} = type, _into, %Tuple{elements: toElements}) when length(fromElements) === length(toElements) do
     {env, elements} = HMEnv.zipmap_env(env, fromElements, toElements, &resolve_types/3)
     {env, %{type | elements: elements}}
   end
@@ -557,11 +715,12 @@ defmodule TypedElixir.Type do
   #   # resolve_types_nolinks(env, fromType, intoType)
   # end
   # Catch-all
-  defp resolve_types_nolinks(_env, from, fromType, intoType) do
+  defp resolve_types_nolinks(_env, from, fromType, into, intoType) do
     # {env, from} = get_type_or_ptr_type(env, fromType)
     # {_env, into} = get_type_or_ptr_type(env, intoType)
-    throw {:NO_TYPE_RESOLUTION, from, fromType, intoType}
+    throw {:NO_TYPE_RESOLUTION, from, fromType, into, intoType}
   end
+
 
 
   def get_generic_bound(env, %Ptr.Generic{id: id}=gen) do

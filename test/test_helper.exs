@@ -1,4 +1,5 @@
 ExUnit.start()
+ExUnit.configure(colors: [enabled: true])
 
 defmodule CompileTimeAssertions do
   defmodule DidNotRaise, do: defstruct(message: nil)
